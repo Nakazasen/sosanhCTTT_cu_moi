@@ -1,0 +1,69 @@
+{
+  "meta": { "schema_version": "1.1.0", "awf_version": "3.3.0" },
+  "project": { 
+    "name": "Sosanh CTTT Refactored", 
+    "type": "Desktop App (Tkinter)", 
+    "status": "Refactoring & Bug Fix",
+    "description": "Tool so sánh danh mục thanh toán (Excel Comparison Tool) & PDF Handling"
+  },
+  "tech_stack": { 
+    "frontend": {
+      "framework": "Tkinter",
+      "style": "Custom Modern UI (Dark Mode support)",
+      "components": ["ui.main_window_modern", "ui.file_select_frame"]
+    }, 
+    "backend": {
+      "language": "Python 3.13+",
+      "core_libs": ["win32com (Excel Automation)", "PyMuPDF (fitz)", "Pillow (Image Processing)", "pythoncom"]
+    }, 
+    "testing": {
+      "framework": "unittest",
+      "runner": "run_tests.py",
+      "tests_dir": "tests/"
+    }
+  },
+  "database_schema": { 
+    "note": "Unexpected: No Database used. Purely File-based processing.",
+    "files": ["Excel (.xlsx, .xls)", "PDF (.pdf)"] 
+  },
+  "features": [
+    {
+      "name": "Excel Selection & Processing",
+      "description": "Select files via Drag & Drop, process Green-Tab sheets."
+    },
+    {
+      "name": "PDF Export",
+      "description": "Robust export using Win32COM with fallback and strict filename sanitization."
+    },
+    {
+      "name": "Visual Comparison",
+      "description": "Compare Excel sheets or PDFs, highlighting differences directly in a visual overlay."
+    },
+    {
+      "name": "Hidden Logging",
+      "description": "Background logging to app_debug.log for forensic debugging.",
+      "status": "New (Implemented)"
+    }
+  ],
+  "knowledge_items": { 
+    "gotchas": [
+      {
+        "issue": "Excel Protected View",
+        "fix": "Use utils.unblock_file() to remove Mark of the Web."
+      },
+      {
+        "issue": "Invalid Filenames",
+        "fix": "Use utils.sanitize_filename_strict() to handle special chars like < > : etc."
+      },
+      {
+        "issue": "PyMuPDF vs Image",
+        "fix": "Comparison requires specific dependency versions."
+      }
+    ],
+    "patterns": [
+      "Service Layer Pattern (ExcelService, PDFService)",
+      "Singleton-ish Utils",
+      "Tkinter Window wrapper"
+    ]
+  }
+}
