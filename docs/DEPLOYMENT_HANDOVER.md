@@ -43,8 +43,9 @@ the risk of missing slow but valid update shares.
   upgrade rather than a second application.
 - `services/settings_service.py` writes mutable user settings to
   `%LOCALAPPDATA%\SosanhCTTTData`; installer upgrades do not overwrite them.
-- `services/release_update_service.py` validates the catalog format and only
-  starts a locally cached installer after its SHA-256 and size match.
+- `services/release_update_service.py` validates the catalog, downloads the
+  `.mpupdate`, checks its SHA-256, validates `manifest.json`, and extracts only
+  the verified installer to the local cache before starting it.
 - The update remains user-confirmed. It is an automatic notification plus a
   manual acceptance/install flow, not a silent replacement of a running `.exe`.
 
@@ -65,6 +66,30 @@ the risk of missing slow but valid update shares.
 The publish sequence copies to a `.part` file, checks SHA-256, then uses
 `os.replace`. `latest.json` is written only after the installer is complete, so
 clients never receive a catalog for a partial file.
+
+## `.mpupdate` Contract And Bootstrap Migration
+
+A `.mpupdate` is a ZIP package, never a renamed executable. It must contain:
+
+```text
+manifest.json
+SosanhCTTT_Setup_<version>.exe
+```
+
+`manifest.json` must declare `schema: 1`, `kind: "installer"`, the matching
+semantic version, installer file name, and an inventory entry with exact size
+and SHA-256. The client verifies the catalog hash first, then validates the
+package manifest and installer hash before it starts the installer.
+
+The installer remains the bootstrap trust boundary for machines on an older
+release. A build that predates `.mpupdate` support cannot consume a package;
+publish its matching Setup in the main release folder and upgrade it once.
+After that bootstrap version is installed, publish future releases as
+`.mpupdate` packages in `release_update` and publish `latest.json` last.
+
+Do not overwrite an already published catalog with a `.mpupdate` version that
+older installed clients cannot parse. Use a documented bootstrap Setup release
+first, then move the update channel to `.mpupdate`.
 
 ## Catalog Format
 
