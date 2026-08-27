@@ -54,7 +54,7 @@ class LegacyScreenshotService:
         self.saved_col_widths = {}  # Lưu độ rộng cột từ file mới
         self.screen_mode = 'pc'  # pc, vps, monitor
         self.zoom_level = 46
-        self.goto_address = 'A1'
+        self.goto_address = 'EX1'
         self.highlight_fill_color = "#ff0000"
         self.highlight_fill_opacity = 30
     
@@ -62,13 +62,16 @@ class LegacyScreenshotService:
         """Đặt chế độ màn hình: 'pc', 'vps', 'monitor'"""
         self.screen_mode = mode
     
+    def set_goto_address(self, address):
+        """Đặt địa chỉ cell để định vị trước khi chụp (ví dụ: 'EX1' hoặc 'EX')"""
+        addr = (str(address).strip() if address else '') or 'EX1'
+        if addr.isalpha():
+            addr = f"{addr}1"
+        self.goto_address = addr
+    
     def set_zoom_level(self, zoom):
         """Đặt mức zoom cho Excel"""
         self.zoom_level = zoom
-    
-    def set_goto_address(self, address):
-        """Đặt địa chỉ cell để định vị trước khi chụp"""
-        self.goto_address = address or 'A1'
     
     def set_highlight_settings(self, fill_color, opacity):
         """Đặt màu và độ mờ cho highlight"""
@@ -98,30 +101,47 @@ class LegacyScreenshotService:
     
     def _make_unique_sheet_name(self, workbook, desired_name):
         """Tạo tên sheet duy nhất để tránh trùng lặp"""
-        base = desired_name
-        i = 1
-        existing = {s.Name for s in workbook.Sheets}
-        new_name = base
-        while new_name in existing:
-            new_name = f"{base}-{i}"
-            i += 1
-        return new_name
+        base_name = desired_name
+        counter = 1
+        existing_names = set(sheet.Name for sheet in workbook.Sheets)
+        
+        while desired_name in existing_names:
+            desired_name = f"{base_name}_{counter}"
+            counter += 1
+        
+        return desired_name
     
     def open_excel_file(self, file_path):
-        """Mở file Excel và trả về đối tượng Excel và workbook (Legacy method)"""
+        """Mở file Excel với COM Dispatch (Visible=True để chụp màn hình)"""
         try:
             pythoncom.CoInitialize()
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = True
-            excel.DisplayAlerts = False
-            excel.EnableEvents = False
-            excel.Application.AutomationSecurity = 3
+            try:
+                excel = win32com.client.Dispatch("Excel.Application")
+            except Exception:
+                excel = win32com.client.DispatchEx("Excel.Application")
+            try:
+                excel.Visible = True
+            except Exception:
+                pass
+            try:
+                excel.DisplayAlerts = False
+            except Exception:
+                pass
+            try:
+                excel.EnableEvents = False
+            except Exception:
+                pass
+            try:
+                excel.Application.AutomationSecurity = 3  # Disable macros
+            except Exception:
+                pass
 
+            file_path = os.path.abspath(file_path)
+            utils.unblock_file(file_path)
             workbook = excel.Workbooks.Open(
                 file_path,
                 UpdateLinks=False,
-                ReadOnly=True,
-                IgnoreReadOnlyRecommended=True,
+                ReadOnly=False,
                 Notify=False,
                 AddToMru=False
             )
@@ -131,7 +151,7 @@ class LegacyScreenshotService:
             return None, None
     
     def connect_to_excel_window(self, excel):
-        """Kết nối với cửa sổ Excel (Legacy method)"""
+        """Kết nối với cửa sổ Excel qua PyWinAuto UIA"""
         if not PYWINAUTO_AVAILABLE:
             utils.logger.error("pywinauto không khả dụng")
             return None
@@ -168,16 +188,29 @@ class LegacyScreenshotService:
         - Ẩn cột BE..EV
         - Lưu/áp dụng độ rộng cột
         - Đổi tên sheet nếu có dấu gạch dưới
+        - Di chuyển tới ô chỉ định (goto_address)
         """
         excel = None
         try:
             if status_callback:
                 status_callback(f"[Legacy] Đang tiền xử lý: {os.path.basename(file_path)}")
             
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            excel.EnableEvents = False
+            try:
+                excel = win32com.client.Dispatch("Excel.Application")
+            except Exception:
+                excel = win32com.client.DispatchEx("Excel.Application")
+            try:
+                excel.Visible = False
+            except Exception:
+                pass
+            try:
+                excel.DisplayAlerts = False
+            except Exception:
+                pass
+            try:
+                excel.EnableEvents = False
+            except Exception:
+                pass
             
             workbook = excel.Workbooks.Open(file_path, UpdateLinks=False, 
                                             ReadOnly=False, Notify=False, AddToMru=False)
@@ -222,9 +255,10 @@ class LegacyScreenshotService:
                     status_callback(f"[Legacy] Xử lý sheet {i}/{total_sheets}")
                 
                 sheet.Activate()
-                excel.ActiveWindow.Zoom = self.zoom_level
-                excel.ActiveWindow.ScrollRow = 1
-                excel.ActiveWindow.ScrollColumn = 1
+                try:
+                    excel.ActiveWindow.Zoom = self.zoom_level
+                except Exception:
+                    pass
                 self.check_and_turn_off_gridlines(excel)
 
                 # Ẩn cột BE..EV (57..152)
@@ -242,12 +276,16 @@ class LegacyScreenshotService:
                     excel.CutCopyMode = False
                 except Exception:
                     pass
+                    
+                # Di chuyển con trỏ và cuộn màn hình đến ô chỉ định (goto_address, ví dụ EX1)
+                goto_addr = (self.goto_address or 'EX1').strip()
+                if goto_addr.isalpha():
+                    goto_addr = f"{goto_addr}1"
                 try:
-                    goto_addr = self.goto_address or 'A1'
-                    sheet.Range(goto_addr).Select()
+                    excel.Application.Goto(Reference=sheet.Range(goto_addr), Scroll=True)
                 except Exception:
                     try:
-                        sheet.Range('A1').Select()
+                        sheet.Range(goto_addr).Select()
                     except Exception:
                         pass
 
@@ -290,6 +328,27 @@ class LegacyScreenshotService:
         """
         utils.logger.info(f"[Legacy] Processing sheet: {sheet.Name}")
         sheet.Activate()
+        
+        # Di chuyển con trỏ và cuộn màn hình đến ô chỉ định (goto_address, ví dụ EX1)
+        goto_addr = (self.goto_address or 'EX1').strip()
+        if goto_addr.isalpha():
+            goto_addr = f"{goto_addr}1"
+            
+        try:
+            excel.Application.Goto(Reference=sheet.Range(goto_addr), Scroll=True)
+            utils.logger.info(f"[Legacy] Moved cursor & scrolled to {goto_addr}")
+        except Exception as goto_err:
+            try:
+                sheet.Range(goto_addr).Select()
+                excel.ActiveWindow.ScrollRow = 1
+                excel.ActiveWindow.ScrollColumn = sheet.Range(goto_addr).Column
+            except Exception:
+                pass
+                
+        try:
+            excel.ActiveWindow.Zoom = self.zoom_level
+        except Exception:
+            pass
         
         try:
             excel.ExecuteExcel4Macro("SHOW.TOOLBAR(\"Ribbon\",False)")
@@ -563,15 +622,37 @@ class LegacyScreenshotService:
             
             try:
                 # Lấy danh sách sheet có màu xanh từ file mới
-                excel = win32com.client.Dispatch("Excel.Application")
-                excel.Visible = False
-                excel.DisplayAlerts = False
-                wb = excel.Workbooks.Open(new_file, UpdateLinks=False, 
-                                          ReadOnly=True, Notify=False, AddToMru=False)
-                sheet_names_colored = [sheet.Name.rstrip() for sheet in wb.Sheets 
-                                       if sheet.Tab.Color == config.COLOR_GREEN_TAB]
-                wb.Close(False)
-                excel.Quit()
+                try:
+                    excel = win32com.client.Dispatch("Excel.Application")
+                except Exception:
+                    excel = win32com.client.DispatchEx("Excel.Application")
+                try:
+                    excel.Visible = False
+                except Exception:
+                    pass
+                try:
+                    excel.DisplayAlerts = False
+                except Exception:
+                    pass
+                
+                sheet_names_colored = []
+                try:
+                    wb = excel.Workbooks.Open(new_file, UpdateLinks=False, 
+                                              ReadOnly=True, Notify=False, AddToMru=False)
+                    for sheet in wb.Sheets:
+                        try:
+                            if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                                sheet_names_colored.append(sheet.Name.rstrip())
+                        except Exception:
+                            continue
+                    wb.Close(False)
+                except Exception as open_err:
+                    utils.logger.error(f"Lỗi khi đọc sheet từ {new_file}: {open_err}")
+                finally:
+                    try:
+                        excel.Quit()
+                    except Exception:
+                        pass
                 
                 if not sheet_names_colored:
                     utils.logger.warning(f"Không tìm thấy sheet màu xanh: {new_file}")

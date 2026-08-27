@@ -60,6 +60,38 @@ TRANSLATIONS = {
         "ja": "サブモニター"
     },
     
+    # ========== DOCUMENT COMPARISON MODE ==========
+    "doc_type_label": {
+        "vi": "Loại tài liệu so sánh:",
+        "en": "Comparison Document Type:",
+        "zh": "对比文档类型:",
+        "ja": "比較ドキュメントの種類:"
+    },
+    "mode_standard_cttt": {
+        "vi": "📘 1. CTTT thông thường có form từ EX...xanh (Vùng EX1:GR76)",
+        "en": "📘 1. Standard SOP (Form from EX... green tab - Range EX1:GR76)",
+        "zh": "📘 1. 普通作业指导书 (从EX起的表格...绿色标签 - 范围 EX1:GR76)",
+        "ja": "📘 1. 通常の作業指導書 (EXからのフォーム...緑色タブ - 範囲 EX1:GR76)"
+    },
+    "mode_dukc_cttt": {
+        "vi": "📑 2. CTTT Đính Kèm ĐƯKC (Vùng J2:BD76 - Nhiều sheet)",
+        "en": "📑 2. SOP DUKC Attachment (Range J2:BD76 - Multi-sheet)",
+        "zh": "📑 2. 应急应对附带作业指导书 (范围 J2:BD76 - 多工作表)",
+        "ja": "📑 2. 緊急対応添付作業指導書 (範囲 J2:BD76 - 複数シート)"
+    },
+    "mode_dukc_other": {
+        "vi": "📄 3. Tờ Phát Hành ĐƯKC & Khác (Vùng A1:AT120 - Nhiều sheet)",
+        "en": "📄 3. DUKC Release Form & Others (Range A1:AT120 - Multi-sheet)",
+        "zh": "📄 3. 应急应对发行表及其它 (范围 A1:AT120 - 多工作表)",
+        "ja": "📄 3. 緊急対応発行票・その他 (範囲 A1:AT120 - 複数シート)"
+    },
+    "print_area_label": {
+        "vi": "Phạm vi so sánh:",
+        "en": "Compare Range:",
+        "zh": "对比范围:",
+        "ja": "比較範囲:"
+    },
+
     # ========== FILE SELECTION ==========
     "new_files_label": {
         "vi": "1.1. Chọn các file chỉ thị thao tác mới:",

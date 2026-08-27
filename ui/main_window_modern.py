@@ -85,7 +85,7 @@ class MainWindow:
         self._refresh_all_ui_texts()
         
         # Auto-update check after 1 second (không chặn UI)
-        self.master.after(1000, self._check_for_updates)
+        self.master.after(1000, self._check_updates_in_background)
 
     def setup_variables(self):
         self.new_dir_path = tk.StringVar()
@@ -102,6 +102,8 @@ class MainWindow:
         self.save_user_settings = tk.BooleanVar(value=self.settings.get("save_settings", True))
         self.use_pdf_method = tk.BooleanVar(value=self.settings.get("use_pdf_method", True))
         self.pdf_render_dpi = tk.IntVar(value=self.settings.get("pdf_dpi", config.DEFAULT_DPI))
+        self.doc_mode_var = tk.StringVar(value=self.settings.get("doc_mode", config.DOC_MODE_STANDARD_CTTT))
+        self.print_area_var = tk.StringVar(value=self.settings.get("print_area", config.PRINT_AREA_STANDARD_CTTT))
         
         # Highlight Colors
         self.highlight_base_color = self.settings.get("highlight_base_color", config.HIGHLIGHT_BASE_COLOR)
@@ -243,11 +245,35 @@ class MainWindow:
         self.file_card.grid_columnconfigure(1, weight=1)
         self.file_card.grid_columnconfigure(3, weight=1)
         
-        # Screen Mode
-        screen_frame = ttk.Frame(self.file_card); screen_frame.grid(row=0, column=0, columnspan=5, sticky="ew", pady=(0, Spacing.MD))
-        self.lbl_screen_mode = ttk.Label(screen_frame, text="Chế độ màn hình:")
+        # Document Mode & Screen Mode
+        mode_frame = ttk.Frame(self.file_card); mode_frame.grid(row=0, column=0, columnspan=5, sticky="ew", pady=(0, Spacing.MD))
+        self.lbl_doc_mode = ttk.Label(mode_frame, text=get_text("doc_type_label", self.current_lang), font=Fonts.get("base", "bold"))
+        self.lbl_doc_mode.pack(side="left", padx=(0, Spacing.SM))
+        
+        self.doc_mode_combo = ttk.Combobox(
+            mode_frame, 
+            values=[
+                get_text("mode_standard_cttt", self.current_lang),
+                get_text("mode_dukc_cttt", self.current_lang),
+                get_text("mode_dukc_other", self.current_lang)
+            ],
+            state="readonly", 
+            width=56
+        )
+        initial_mode = self.doc_mode_var.get()
+        if initial_mode == config.DOC_MODE_DUKC_CTTT:
+            self.doc_mode_combo.current(1)
+        elif initial_mode == config.DOC_MODE_DUKC_OTHER:
+            self.doc_mode_combo.current(2)
+        else:
+            self.doc_mode_combo.current(0)
+            
+        self.doc_mode_combo.pack(side="left", padx=(0, Spacing.LG))
+        self.doc_mode_combo.bind("<<ComboboxSelected>>", self.on_doc_mode_change)
+
+        self.lbl_screen_mode = ttk.Label(mode_frame, text=get_text("screen_mode_label", self.current_lang))
         self.lbl_screen_mode.pack(side="left", padx=(0, Spacing.SM))
-        self.screen_combo = ttk.Combobox(screen_frame, values=["Màn hình PC", "VPS", "Màn hình phụ"], state="readonly", width=20)
+        self.screen_combo = ttk.Combobox(mode_frame, values=["Màn hình PC", "VPS", "Màn hình phụ"], state="readonly", width=15)
         self.screen_combo.current(0)
         self.screen_combo.pack(side="left")
         self.screen_combo.bind("<<ComboboxSelected>>", self.on_screen_mode_change)
@@ -399,8 +425,29 @@ class MainWindow:
         self.status_version_label = ttk.Label(status_frame, text=f"Phiên bản {config.APP_VERSION} | {config.APP_DATE}", style="Muted.TLabel")
         self.status_version_label.pack(side="right", padx=Spacing.LG, pady=Spacing.SM)
 
+    def on_doc_mode_change(self, event=None):
+        idx = self.doc_mode_combo.current()
+        if idx == 1:
+            self.doc_mode_var.set(config.DOC_MODE_DUKC_CTTT)
+            self.print_area_var.set(config.PRINT_AREA_DUKC_CTTT)
+            self.update_status("Chế độ: CTTT Đính kèm ĐƯKC (Vùng in: J2:BD76)")
+        elif idx == 2:
+            self.doc_mode_var.set(config.DOC_MODE_DUKC_OTHER)
+            self.print_area_var.set(config.PRINT_AREA_DUKC_OTHER)
+            self.update_status("Chế độ: Tờ phát hành ĐƯKC & Khác (Vùng in: A1:AT120)")
+        else:
+            self.doc_mode_var.set(config.DOC_MODE_STANDARD_CTTT)
+            self.print_area_var.set(config.PRINT_AREA_STANDARD_CTTT)
+            self.update_status("Chế độ: CTTT thông thường có form từ EX...xanh (Vùng in: EX1:GR76)")
+            
+    def on_screen_mode_change(self, event=None):
+        mode_idx = self.screen_combo.current()
+        modes = ["pc", "vps", "monitor"]
+        if 0 <= mode_idx < len(modes):
+            self.screen_mode.set(modes[mode_idx])
+
     # ========== FILE SELECTION METHODS ==========
-    def select_new_files(self):
+    def select_new_files(self, append_only=False):
         initial_dir = self.new_dir_path.get().strip()
         if not initial_dir or not os.path.exists(initial_dir):
             initial_dir = os.getcwd()
@@ -414,14 +461,82 @@ class MainWindow:
             filetypes=[(filetype_texts.get(self.current_lang, filetype_texts["vi"]), "*.xls *.xlsx *.xlsm")]
         )
         
-        if files:
-            self.new_files = list(files)
-            self.new_dir_path.set(os.path.dirname(files[0]))
+        if not files:
+            return
+            
+        new_selected = list(files)
+        
+        # Nếu trước đó đã có file trong danh sách và không phải chế độ ép buộc bổ sung
+        if self.new_files and not append_only:
+            dialog_titles = {
+                "vi": "Bổ sung hoặc Thay thế file CTTT mới",
+                "en": "Append or Replace New CTTT Files",
+                "zh": "追加或替换新CTTT文件",
+                "ja": "新CTTTファイルの追加または置換"
+            }
+            dialog_msgs = {
+                "vi": f"Hiện đang có {len(self.new_files)} file CTTT mới đã chọn trước đó.\n"
+                      f"Bạn vừa chọn {len(new_selected)} file.\n\n"
+                      f"• [Có / Yes]: BỔ SUNG thêm vào danh sách (giữ file cũ, thêm file mới)\n"
+                      f"• [Không / No]: THAY THẾ toàn bộ bằng danh sách mới\n"
+                      f"• [Hủy / Cancel]: Giữ nguyên danh sách hiện tại",
+                "en": f"{len(self.new_files)} new CTTT files already selected.\n"
+                      f"You just selected {len(new_selected)} files.\n\n"
+                      f"• [Yes]: APPEND to current list (keep old, add new)\n"
+                      f"• [No]: REPLACE all with new files\n"
+                      f"• [Cancel]: Keep current list",
+                "zh": f"当前已选择 {len(self.new_files)} 个新CTTT文件。\n"
+                      f"您刚刚选择了 {len(new_selected)} 个文件。\n\n"
+                      f"• [是 / Yes]: 追加到当前列表\n"
+                      f"• [否 / No]: 用新文件全部替换\n"
+                      f"• [取消 / Cancel]: 保持不变",
+                "ja": f"現在 {len(self.new_files)} 個の新CTTTファイルが選択されています。\n"
+                      f"新しく {len(new_selected)} 個のファイルを選択しました。\n\n"
+                      f"• [はい / Yes]: 現在のリストに追加\n"
+                      f"• [いいえ / No]: 新規ファイルですべて置換\n"
+                      f"• [キャンセル]: 変更しない"
+            }
+            
+            ans = messagebox.askyesnocancel(
+                dialog_titles.get(self.current_lang, dialog_titles["vi"]),
+                dialog_msgs.get(self.current_lang, dialog_msgs["vi"]),
+                parent=self.master
+            )
+            
+            if ans is None:
+                return  # Cancel
+            elif ans is True:
+                # Bổ sung - loại bỏ trùng lặp
+                existing = {os.path.normcase(os.path.normpath(f)) for f in self.new_files}
+                added_count = 0
+                for f in new_selected:
+                    norm = os.path.normcase(os.path.normpath(f))
+                    if norm not in existing:
+                        self.new_files.append(f)
+                        existing.add(norm)
+                        added_count += 1
+                utils.logger.info(f"Appended {added_count} files to new_files. Total: {len(self.new_files)}")
+            else:
+                # Thay thế
+                self.new_files = new_selected
+        else:
+            if append_only and self.new_files:
+                existing = {os.path.normcase(os.path.normpath(f)) for f in self.new_files}
+                for f in new_selected:
+                    norm = os.path.normcase(os.path.normpath(f))
+                    if norm not in existing:
+                        self.new_files.append(f)
+                        existing.add(norm)
+            else:
+                self.new_files = new_selected
+        
+        if self.new_files:
+            self.new_dir_path.set(os.path.dirname(self.new_files[0]))
             file_names = ', '.join([os.path.basename(f) for f in self.new_files])
             self.new_files_display.set(file_names)
             self._auto_save_settings()
 
-    def select_old_files(self):
+    def select_old_files(self, append_only=False):
         initial_dir = self.old_dir_path.get().strip()
         if not initial_dir or not os.path.exists(initial_dir):
             initial_dir = os.getcwd()
@@ -435,9 +550,74 @@ class MainWindow:
             filetypes=[(filetype_texts.get(self.current_lang, filetype_texts["vi"]), "*.xls *.xlsx *.xlsm")]
         )
         
-        if files:
-            self.old_files = list(files)
-            self.old_dir_path.set(os.path.dirname(files[0]))
+        if not files:
+            return
+            
+        new_selected = list(files)
+        
+        if self.old_files and not append_only:
+            dialog_titles = {
+                "vi": "Bổ sung hoặc Thay thế file CTTT cũ",
+                "en": "Append or Replace Old CTTT Files",
+                "zh": "追加或替换旧CTTT文件",
+                "ja": "旧CTTTファイルの追加または置換"
+            }
+            dialog_msgs = {
+                "vi": f"Hiện đang có {len(self.old_files)} file CTTT cũ trong danh sách.\n"
+                      f"Bạn vừa chọn {len(new_selected)} file.\n\n"
+                      f"• [Có / Yes]: BỔ SUNG thêm vào danh sách (giữ file cũ, thêm file mới)\n"
+                      f"• [Không / No]: THAY THẾ toàn bộ bằng danh sách mới\n"
+                      f"• [Hủy / Cancel]: Giữ nguyên danh sách hiện tại",
+                "en": f"{len(self.old_files)} old CTTT files already selected.\n"
+                      f"You just selected {len(new_selected)} files.\n\n"
+                      f"• [Yes]: APPEND to current list (keep old, add new)\n"
+                      f"• [No]: REPLACE all with new files\n"
+                      f"• [Cancel]: Keep current list",
+                "zh": f"当前已选择 {len(self.old_files)} 个旧CTTT文件。\n"
+                      f"您刚刚选择了 {len(new_selected)} 个文件。\n\n"
+                      f"• [是 / Yes]: 追加到当前列表\n"
+                      f"• [否 / No]: 用新文件全部替换\n"
+                      f"• [取消 / Cancel]: 保持不变",
+                "ja": f"現在 {len(self.old_files)} 個の旧CTTTファイルが選択されています。\n"
+                      f"新しく {len(new_selected)} 個のファイルを選択しました。\n\n"
+                      f"• [はい / Yes]: 現在のリストに追加\n"
+                      f"• [いいえ / No]: 新規ファイルですべて置換\n"
+                      f"• [キャンセル]: 変更しない"
+            }
+            
+            ans = messagebox.askyesnocancel(
+                dialog_titles.get(self.current_lang, dialog_titles["vi"]),
+                dialog_msgs.get(self.current_lang, dialog_msgs["vi"]),
+                parent=self.master
+            )
+            
+            if ans is None:
+                return
+            elif ans is True:
+                existing = {os.path.normcase(os.path.normpath(f)) for f in self.old_files}
+                added_count = 0
+                for f in new_selected:
+                    norm = os.path.normcase(os.path.normpath(f))
+                    if norm not in existing:
+                        self.old_files.append(f)
+                        existing.add(norm)
+                        added_count += 1
+                utils.logger.info(f"Appended {added_count} files to old_files. Total: {len(self.old_files)}")
+            else:
+                self.old_files = new_selected
+        else:
+            if append_only and self.old_files:
+                existing = {os.path.normcase(os.path.normpath(f)) for f in self.old_files}
+                for f in new_selected:
+                    norm = os.path.normcase(os.path.normpath(f))
+                    if norm not in existing:
+                        self.old_files.append(f)
+                        existing.add(norm)
+            else:
+                self.old_files = new_selected
+                
+        if self.old_files:
+            self.old_dir_path.set(os.path.dirname(self.old_files[0]))
             file_names = ', '.join([os.path.basename(f) for f in self.old_files])
             self.old_files_display.set(file_names)
             self._auto_save_settings()
@@ -455,143 +635,310 @@ class MainWindow:
         self.show_confirmation_dialog()
 
     def show_confirmation_dialog(self):
-        """Hiển thị hộp thoại xác nhận thứ tự các cặp file CTTT để người dùng kiểm tra và sắp xếp lại"""
+        """Hiển thị hộp thoại xác nhận thứ tự các cặp file CTTT để người dùng kiểm tra, bổ sung và sắp xếp lại"""
         lang = self.current_lang
         
-        # Error messages
-        error_titles = {"vi": "Lỗi", "en": "Error", "zh": "错误", "ja": "エラー"}
-        missing_files_msgs = {
-            "vi": "Bạn cần chọn cả file CTTT cũ và mới trước khi kiểm tra.",
-            "en": "Please select both old and new CTTT files before checking.",
-            "zh": "请先选择新旧CTTT文件再进行检查。",
-            "ja": "確認する前に新旧CTTTファイルを両方選択してください。"
-        }
-        mismatch_msgs = {
-            "vi": "Số lượng file CTTT mới và cũ không khớp.",
-            "en": "Number of new and old CTTT files do not match.",
-            "zh": "新旧CTTT文件数量不匹配。",
-            "ja": "新旧CTTTファイルの数が一致しません。"
-        }
-        
-        if not self.new_files or not self.old_files:
-            messagebox.showerror(error_titles.get(lang, error_titles["vi"]), missing_files_msgs.get(lang, missing_files_msgs["vi"]))
-            return
-
-        if len(self.new_files) != len(self.old_files):
-            messagebox.showerror(error_titles.get(lang, error_titles["vi"]), mismatch_msgs.get(lang, mismatch_msgs["vi"]))
+        if not self.new_files and not self.old_files:
+            warning_titles = {"vi": "Chưa chọn file", "en": "No files selected", "zh": "未选择文件", "ja": "ファイル未選択"}
+            missing_files_msgs = {
+                "vi": "Bạn cần chọn file CTTT trước khi kiểm tra.",
+                "en": "Please select CTTT files before checking.",
+                "zh": "请先选择CTTT文件再进行检查。",
+                "ja": "確認する前にCTTTファイルを選択してください。"
+            }
+            messagebox.showwarning(warning_titles.get(lang, warning_titles["vi"]), missing_files_msgs.get(lang, missing_files_msgs["vi"]), parent=self.master)
             return
 
         # Dialog texts
-        dialog_titles = {"vi": "Xác nhận các cặp CTTT", "en": "Confirm CTTT pairs", "zh": "确认CTTT配对", "ja": "CTTTペアを確認"}
-        hint_texts = {"vi": "Kéo thả để sắp xếp lại thứ tự file:", "en": "Drag and drop to reorder files:", "zh": "拖放以重新排序文件:", "ja": "ドラッグ&ドロップでファイルを並べ替え:"}
-        new_label_texts = {"vi": "CTTT Mới", "en": "New CTTT", "zh": "新CTTT", "ja": "新CTTT"}
-        old_label_texts = {"vi": "CTTT Cũ", "en": "Old CTTT", "zh": "旧CTTT", "ja": "旧CTTT"}
-        confirm_btn_texts = {"vi": "✅ Xác nhận", "en": "✅ Confirm", "zh": "✅ 确认", "ja": "✅ 確認"}
-        delete_btn_texts = {"vi": "🗑️ Xóa mục đã chọn", "en": "🗑️ Delete selected", "zh": "🗑️ 删除选中项", "ja": "🗑️ 選択項目を削除"}
+        dialog_titles = {"vi": "🔍 Kiểm tra & Sắp xếp các cặp CTTT", "en": "🔍 Check & Reorder CTTT pairs", "zh": "🔍 检查并排序CTTT配对", "ja": "🔍 CTTTペアの確認と並べ替え"}
+        hint_texts = {"vi": "💡 Kéo thả từng dòng để đổi thứ tự đối ứng. Dùng nút '➕ Thêm' để chọn bổ sung nếu bị thiếu file!", 
+                      "en": "💡 Drag & drop to reorder pairs. Use '➕ Add' to append missing files!", 
+                      "zh": "💡 拖放以重新排序。使用 '➕ 添加' 按钮补充缺少的文件！", 
+                      "ja": "💡 ドラッグ＆ドロップで並べ替え。'➕ 追加' ボタンで不足ファイルを追加できます！"}
+        confirm_btn_texts = {"vi": "✅ Xác nhận & Lưu", "en": "✅ Confirm & Save", "zh": "✅ 确认并保存", "ja": "✅ 確認して保存"}
+        delete_selected_texts = {"vi": "🗑️ Xóa cả 2 mục đang chọn", "en": "🗑️ Delete both selected", "zh": "🗑️ 删除两个选中项", "ja": "🗑️ 両方の選択項目を削除"}
         close_btn_texts = {"vi": "❌ Đóng", "en": "❌ Close", "zh": "❌ 关闭", "ja": "❌ 閉じる"}
+        add_new_texts = {"vi": "➕ Thêm CTTT Mới", "en": "➕ Add New CTTT", "zh": "➕ 添加新CTTT", "ja": "➕ 新CTTT追加"}
+        add_old_texts = {"vi": "➕ Thêm CTTT Cũ", "en": "➕ Add Old CTTT", "zh": "➕ 添加旧CTTT", "ja": "➕ 旧CTTT追加"}
+        del_new_texts = {"vi": "🗑️ Xóa file chọn", "en": "🗑️ Delete selected", "zh": "🗑️ 删除选中项", "ja": "🗑️ 選択項目を削除"}
+        del_old_texts = {"vi": "🗑️ Xóa file chọn", "en": "🗑️ Delete selected", "zh": "🗑️ 删除选中项", "ja": "🗑️ 選択項目を削除"}
 
         # Tạo cửa sổ con để hiển thị danh sách file
         self.confirmation_window = tk.Toplevel(self.master)
         self.confirmation_window.title(dialog_titles.get(lang, dialog_titles["vi"]))
-        self.confirmation_window.geometry("800x500")
+        self.confirmation_window.geometry("860x560")
+        self.confirmation_window.minsize(720, 460)
         self.confirmation_window.configure(bg=Colors.BG_MAIN)
+        self.confirmation_window.transient(self.master)
         
         # Khởi tạo drag data
         self.drag_data = {}
         
-        # Label hướng dẫn
-        ttk.Label(self.confirmation_window, text=hint_texts.get(lang, hint_texts["vi"]), style="Subheader.TLabel").pack(pady=Spacing.MD)
+        # Header frame
+        header_frame = ttk.Frame(self.confirmation_window, padding=Spacing.SM)
+        header_frame.pack(fill="x", padx=Spacing.MD, pady=(Spacing.SM, 0))
         
-        # Tạo khung chứa 2 listbox song song
+        lbl_hint = ttk.Label(header_frame, text=hint_texts.get(lang, hint_texts["vi"]), style="Subheader.TLabel", wraplength=820)
+        lbl_hint.pack(anchor="w")
+        
+        # Match status label
+        self.lbl_match_status = tk.Label(header_frame, font=Fonts.get("base", "bold"), anchor="w", pady=4)
+        self.lbl_match_status.pack(fill="x")
+        
+        # Tạo khung chứa 2 cột song song
         listbox_frame = ttk.Frame(self.confirmation_window)
-        listbox_frame.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.SM)
+        listbox_frame.pack(fill="both", expand=True, padx=Spacing.MD, pady=Spacing.SM)
+        listbox_frame.grid_columnconfigure(0, weight=1)
+        listbox_frame.grid_columnconfigure(1, weight=1)
+        listbox_frame.grid_rowconfigure(1, weight=1)
         
-        # Label cho listbox
-        left_frame = ttk.Frame(listbox_frame)
-        left_frame.pack(side="left", fill="both", expand=True, padx=(0, Spacing.SM))
-        ttk.Label(left_frame, text=new_label_texts.get(lang, new_label_texts["vi"]), style="Subheader.TLabel").pack()
+        # Header labels
+        self.lbl_new_header = ttk.Label(listbox_frame, text=f"📂 CTTT Mới ({len(self.new_files)} file)", font=Fonts.get("base", "bold"))
+        self.lbl_new_header.grid(row=0, column=0, sticky="w", padx=Spacing.SM, pady=(0, 4))
         
-        right_frame = ttk.Frame(listbox_frame)
-        right_frame.pack(side="left", fill="both", expand=True, padx=(Spacing.SM, 0))
-        ttk.Label(right_frame, text=old_label_texts.get(lang, old_label_texts["vi"]), style="Subheader.TLabel").pack()
+        self.lbl_old_header = ttk.Label(listbox_frame, text=f"📂 CTTT Cũ ({len(self.old_files)} file)", font=Fonts.get("base", "bold"))
+        self.lbl_old_header.grid(row=0, column=1, sticky="w", padx=Spacing.SM, pady=(0, 4))
+        
+        # Left container with scrollbar
+        left_subframe = ttk.Frame(listbox_frame)
+        left_subframe.grid(row=1, column=0, sticky="nsew", padx=Spacing.SM)
+        left_subframe.grid_columnconfigure(0, weight=1)
+        left_subframe.grid_rowconfigure(0, weight=1)
+        
+        self.new_files_listbox = tk.Listbox(left_subframe, selectmode=tk.SINGLE, font=Fonts.get("base"), exportselection=False)
+        self.new_files_listbox.grid(row=0, column=0, sticky="nsew")
+        new_scroll = ttk.Scrollbar(left_subframe, orient="vertical", command=self.new_files_listbox.yview)
+        new_scroll.grid(row=0, column=1, sticky="ns")
+        self.new_files_listbox.config(yscrollcommand=new_scroll.set)
+        
+        # Left sub buttons (Thêm / Xóa)
+        left_btn_frame = ttk.Frame(left_subframe)
+        left_btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        
+        def _add_more_new_files():
+            self.select_new_files(append_only=True)
+            _refresh_dialog_lists()
+            
+        def _del_selected_new_file():
+            sel = self.new_files_listbox.curselection()
+            idx = None
+            if sel and len(sel) > 0:
+                idx = sel[0]
+            else:
+                active = self.new_files_listbox.index(tk.ACTIVE)
+                if active is not None and 0 <= active < len(self.new_files):
+                    idx = active
+            
+            if idx is not None and 0 <= idx < len(self.new_files):
+                self.new_files.pop(idx)
+                _refresh_dialog_lists()
+                if len(self.new_files) > 0:
+                    new_idx = min(idx, len(self.new_files) - 1)
+                    self.new_files_listbox.selection_set(new_idx)
+                    self.new_files_listbox.activate(new_idx)
+                
+        ttk.Button(left_btn_frame, text=add_new_texts.get(lang, add_new_texts["vi"]), command=_add_more_new_files, style="Primary.TButton").pack(side="left", padx=(0, Spacing.XS))
+        ttk.Button(left_btn_frame, text=del_new_texts.get(lang, del_new_texts["vi"]), command=_del_selected_new_file, style="Secondary.TButton").pack(side="left")
+        
+        # Right container with scrollbar
+        right_subframe = ttk.Frame(listbox_frame)
+        right_subframe.grid(row=1, column=1, sticky="nsew", padx=Spacing.SM)
+        right_subframe.grid_columnconfigure(0, weight=1)
+        right_subframe.grid_rowconfigure(0, weight=1)
+        
+        self.old_files_listbox = tk.Listbox(right_subframe, selectmode=tk.SINGLE, font=Fonts.get("base"), exportselection=False)
+        self.old_files_listbox.grid(row=0, column=0, sticky="nsew")
+        old_scroll = ttk.Scrollbar(right_subframe, orient="vertical", command=self.old_files_listbox.yview)
+        old_scroll.grid(row=0, column=1, sticky="ns")
+        self.old_files_listbox.config(yscrollcommand=old_scroll.set)
+        
+        # Right sub buttons (Thêm / Xóa)
+        right_btn_frame = ttk.Frame(right_subframe)
+        right_btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        
+        def _add_more_old_files():
+            self.select_old_files(append_only=True)
+            _refresh_dialog_lists()
+            
+        def _del_selected_old_file():
+            sel = self.old_files_listbox.curselection()
+            idx = None
+            if sel and len(sel) > 0:
+                idx = sel[0]
+            else:
+                active = self.old_files_listbox.index(tk.ACTIVE)
+                if active is not None and 0 <= active < len(self.old_files):
+                    idx = active
+                    
+            if idx is not None and 0 <= idx < len(self.old_files):
+                self.old_files.pop(idx)
+                _refresh_dialog_lists()
+                if len(self.old_files) > 0:
+                    new_idx = min(idx, len(self.old_files) - 1)
+                    self.old_files_listbox.selection_set(new_idx)
+                    self.old_files_listbox.activate(new_idx)
+                
+        ttk.Button(right_btn_frame, text=add_old_texts.get(lang, add_old_texts["vi"]), command=_add_more_old_files, style="Primary.TButton").pack(side="left", padx=(0, Spacing.XS))
+        ttk.Button(right_btn_frame, text=del_old_texts.get(lang, del_old_texts["vi"]), command=_del_selected_old_file, style="Secondary.TButton").pack(side="left")
+        
+        # Helper to refresh dialog lists and match label
+        def _refresh_dialog_lists():
+            # Save selections before refresh
+            cur_new = self.new_files_listbox.curselection()
+            cur_old = self.old_files_listbox.curselection()
+            
+            self.new_files_listbox.delete(0, tk.END)
+            for f in self.new_files:
+                self.new_files_listbox.insert(tk.END, os.path.basename(f))
+                
+            self.old_files_listbox.delete(0, tk.END)
+            for f in self.old_files:
+                self.old_files_listbox.insert(tk.END, os.path.basename(f))
+                
+            # Restore selections if valid
+            if cur_new and cur_new[0] < len(self.new_files):
+                self.new_files_listbox.selection_set(cur_new[0])
+            if cur_old and cur_old[0] < len(self.old_files):
+                self.old_files_listbox.selection_set(cur_old[0])
+                
+            n_new = len(self.new_files)
+            n_old = len(self.old_files)
+            
+            new_title = {"vi": f"📂 CTTT Mới ({n_new} file)", "en": f"📂 New CTTT ({n_new} files)", "zh": f"📂 新CTTT ({n_new} 文件)", "ja": f"📂 新CTTT ({n_new} 件)"}
+            old_title = {"vi": f"📂 CTTT Cũ ({n_old} file)", "en": f"📂 Old CTTT ({n_old} files)", "zh": f"📂 旧CTTT ({n_old} 文件)", "ja": f"📂 旧CTTT ({n_old} 件)"}
+            
+            self.lbl_new_header.config(text=new_title.get(lang, new_title["vi"]))
+            self.lbl_old_header.config(text=old_title.get(lang, old_title["vi"]))
+            
+            if n_new == n_old and n_new > 0:
+                match_txt = {"vi": f"✅ Khớp số lượng: {n_new} cặp file CTTT (Đủ điều kiện so sánh)",
+                             "en": f"✅ Count matched: {n_new} CTTT file pairs (Ready to compare)",
+                             "zh": f"✅ 数量匹配: {n_new} 对CTTT文件 (准备就绪)",
+                             "ja": f"✅ ファイル数一致: {n_new} ペア (比較可能)"}
+                self.lbl_match_status.config(text=match_txt.get(lang, match_txt["vi"]), fg="#16A34A")
+            else:
+                diff_txt = {"vi": f"⚠️ CHƯA KHỚP SỐ LƯỢNG: CTTT Mới ({n_new} file) ≠ CTTT Cũ ({n_old} file). Bấm '➕ Thêm' để chọn bù hoặc '🗑️ Xóa' để cân bằng!",
+                            "en": f"⚠️ COUNT MISMATCH: New ({n_new}) ≠ Old ({n_old}). Click '➕ Add' or '🗑️ Delete' to balance!",
+                            "zh": f"⚠️ 数量不匹配: 新 ({n_new}) ≠ 旧 ({n_old})。请点击 '➕ 添加' 或 '🗑️ 删除' 进行平衡！",
+                            "ja": f"⚠️ ファイル数不一致: 新 ({n_new}) ≠ 旧 ({n_old})。'➕ 追加' または '🗑️ 削除' で数を揃えてください！"}
+                self.lbl_match_status.config(text=diff_txt.get(lang, diff_txt["vi"]), fg="#DC2626")
+            
+            # Cập nhật hiển thị ngoài main window
+            file_names_new = ', '.join([os.path.basename(f) for f in self.new_files])
+            file_names_old = ', '.join([os.path.basename(f) for f in self.old_files])
+            self.new_files_display.set(file_names_new)
+            self.old_files_display.set(file_names_old)
+            self._auto_save_settings()
 
-        # Tạo listbox cho file mới (bên trái)
-        self.new_files_listbox = tk.Listbox(left_frame, selectmode=tk.SINGLE, font=Fonts.get("base"))
-        self.new_files_listbox.pack(fill="both", expand=True)
-        
-        # Tạo listbox cho file cũ (bên phải)
-        self.old_files_listbox = tk.Listbox(right_frame, selectmode=tk.SINGLE, font=Fonts.get("base"))
-        self.old_files_listbox.pack(fill="both", expand=True)
-
-        # Thêm tên file vào các listbox
-        for new_file in self.new_files:
-            self.new_files_listbox.insert(tk.END, os.path.basename(new_file))
-        for old_file in self.old_files:
-            self.old_files_listbox.insert(tk.END, os.path.basename(old_file))
+        # Load initial items
+        _refresh_dialog_lists()
 
         # Gán sự kiện kéo thả cho cả 2 listbox
         self.new_files_listbox.bind("<Button-1>", self.on_drag_start)
         self.new_files_listbox.bind("<B1-Motion>", self.on_drag_motion)
         self.new_files_listbox.bind("<ButtonRelease-1>", self.on_drag_release)
+        self.new_files_listbox.bind("<Delete>", lambda e: _del_selected_new_file())
+        self.new_files_listbox.bind("<BackSpace>", lambda e: _del_selected_new_file())
 
         self.old_files_listbox.bind("<Button-1>", self.on_drag_start)
         self.old_files_listbox.bind("<B1-Motion>", self.on_drag_motion)
         self.old_files_listbox.bind("<ButtonRelease-1>", self.on_drag_release)
+        self.old_files_listbox.bind("<Delete>", lambda e: _del_selected_old_file())
+        self.old_files_listbox.bind("<BackSpace>", lambda e: _del_selected_old_file())
 
-        # Tạo nút xác nhận và xóa
-        btn_frame = ttk.Frame(self.confirmation_window)
-        btn_frame.pack(pady=Spacing.MD)
-        ttk.Button(btn_frame, text=confirm_btn_texts.get(lang, confirm_btn_texts["vi"]), command=self.confirm_files, style="Primary.TButton").pack(side="left", padx=Spacing.SM)
-        ttk.Button(btn_frame, text=delete_btn_texts.get(lang, delete_btn_texts["vi"]), command=self.delete_selected_items, style="Secondary.TButton").pack(side="left", padx=Spacing.SM)
-        ttk.Button(btn_frame, text=close_btn_texts.get(lang, close_btn_texts["vi"]), command=self.confirmation_window.destroy, style="Secondary.TButton").pack(side="left", padx=Spacing.SM)
+        # Tạo nút xác nhận và xóa ở chân dialog
+        btn_frame = ttk.Frame(self.confirmation_window, padding=Spacing.SM)
+        btn_frame.pack(fill="x", padx=Spacing.MD, pady=Spacing.SM)
+        
+        def _on_confirm_click():
+            if len(self.new_files) != len(self.old_files):
+                warn_titles = {"vi": "Số lượng chưa khớp", "en": "Count mismatch", "zh": "数量不匹配", "ja": "数が一致しません"}
+                warn_msgs = {
+                    "vi": f"Số lượng file chưa khớp nhau!\nCTTT Mới: {len(self.new_files)} file\nCTTT Cũ: {len(self.old_files)} file\n\nVui lòng bấm '➕ Thêm' để chọn bổ sung file còn thiếu hoặc '🗑️ Xóa' bớt file thừa trước khi xác nhận!",
+                    "en": f"File count does not match!\nNew: {len(self.new_files)}, Old: {len(self.old_files)}\n\nPlease click '➕ Add' to append missing files or '🗑️ Delete' to balance before confirming!",
+                    "zh": f"文件数量不匹配！\n新: {len(self.new_files)}, 旧: {len(self.old_files)}\n\n请在确认前点击 '➕ 添加' 补充文件或 '🗑️ 删除' 平衡数量！",
+                    "ja": f"ファイル数が一致していません！\n新: {len(self.new_files)}, 旧: {len(self.old_files)}\n\n確認前に '➕ 追加' で不足ファイルを追加するか '🗑️ 削除' で数を揃えてください！"
+                }
+                messagebox.showwarning(warn_titles.get(lang, warn_titles["vi"]), warn_msgs.get(lang, warn_msgs["vi"]), parent=self.confirmation_window)
+                return
+            self.confirm_files()
+
+        ttk.Button(btn_frame, text=confirm_btn_texts.get(lang, confirm_btn_texts["vi"]), command=_on_confirm_click, style="Primary.TButton").pack(side="left", padx=Spacing.SM)
+        ttk.Button(btn_frame, text=delete_selected_texts.get(lang, delete_selected_texts["vi"]), command=lambda: (self.delete_selected_items(), _refresh_dialog_lists()), style="Secondary.TButton").pack(side="left", padx=Spacing.SM)
+        ttk.Button(btn_frame, text=close_btn_texts.get(lang, close_btn_texts["vi"]), command=self.confirmation_window.destroy, style="Secondary.TButton").pack(side="right", padx=Spacing.SM)
 
     def on_drag_start(self, event):
         """Xử lý sự kiện bắt đầu kéo thả trong listbox"""
         widget = event.widget
+        self.drag_data["widget"] = widget
         self.drag_data["index"] = widget.nearest(event.y)
-        self.drag_data["item"] = widget.get(self.drag_data["index"])
+        self.drag_data["item"] = widget.get(self.drag_data["index"]) if self.drag_data["index"] >= 0 else None
+        self.drag_data["moved"] = False
 
     def on_drag_motion(self, event):
         """Xử lý sự kiện kéo thả trong listbox, cho phép sắp xếp lại thứ tự file"""
         widget = event.widget
+        if not self.drag_data.get("widget") or widget != self.drag_data.get("widget"):
+            return
         index = widget.nearest(event.y)
+        old_index = self.drag_data.get("index")
         
-        if index != self.drag_data.get("index"):
-            widget.delete(self.drag_data["index"])
+        target_list = self.new_files if widget == self.new_files_listbox else self.old_files
+        
+        if old_index is not None and index != old_index and 0 <= old_index < len(target_list) and 0 <= index < len(target_list):
+            widget.delete(old_index)
             widget.insert(index, self.drag_data["item"])
-            
-            if widget == self.new_files_listbox:
-                self.new_files.insert(index, self.new_files.pop(self.drag_data["index"]))
-            else:
-                self.old_files.insert(index, self.old_files.pop(self.drag_data["index"]))
-
+            widget.selection_clear(0, tk.END)
+            widget.selection_set(index)
+            target_list.insert(index, target_list.pop(old_index))
             self.drag_data["index"] = index
+            self.drag_data["moved"] = True
 
     def on_drag_release(self, event):
         """Xử lý sự kiện thả chuột, kết thúc quá trình kéo thả"""
+        if self.drag_data.get("moved"):
+            # Update main window display text
+            file_names_new = ', '.join([os.path.basename(f) for f in self.new_files])
+            file_names_old = ', '.join([os.path.basename(f) for f in self.old_files])
+            self.new_files_display.set(file_names_new)
+            self.old_files_display.set(file_names_old)
+            self._auto_save_settings()
         self.drag_data["item"] = None
         self.drag_data["index"] = None
+        self.drag_data["widget"] = None
+        self.drag_data["moved"] = False
 
     def delete_selected_items(self):
         """Xóa các mục được chọn khỏi cả hai listbox và danh sách file tương ứng"""
         selected_new_index = self.new_files_listbox.curselection()
         selected_old_index = self.old_files_listbox.curselection()
 
+        if not selected_new_index:
+            active_new = self.new_files_listbox.index(tk.ACTIVE)
+            if active_new is not None and 0 <= active_new < len(self.new_files):
+                selected_new_index = (active_new,)
+
+        if not selected_old_index:
+            active_old = self.old_files_listbox.index(tk.ACTIVE)
+            if active_old is not None and 0 <= active_old < len(self.old_files):
+                selected_old_index = (active_old,)
+
         if selected_new_index:
             selected_index = selected_new_index[0]
-            self.new_files.pop(selected_index)
-            self.new_files_listbox.delete(selected_index)
+            if selected_index < len(self.new_files):
+                self.new_files.pop(selected_index)
             
         if selected_old_index:
             selected_index = selected_old_index[0]
-            self.old_files.pop(selected_index)
-            self.old_files_listbox.delete(selected_index)
+            if selected_index < len(self.old_files):
+                self.old_files.pop(selected_index)
 
         # Cập nhật hiển thị tên file trong các entry sau khi xóa
         file_names_new = ', '.join([os.path.basename(f) for f in self.new_files])
         file_names_old = ', '.join([os.path.basename(f) for f in self.old_files])
         self.new_files_display.set(file_names_new)
         self.old_files_display.set(file_names_old)
+        self._auto_save_settings()
 
     def confirm_files(self):
         """Xác nhận và áp dụng thứ tự file đã sắp xếp, đóng cửa sổ xác nhận"""
@@ -601,16 +948,21 @@ class MainWindow:
         file_names_old = ', '.join([os.path.basename(f) for f in self.old_files])
         self.new_files_display.set(file_names_new)
         self.old_files_display.set(file_names_old)
+        self._auto_save_settings()
 
         confirm_titles = {"vi": "Xác nhận", "en": "Confirmed", "zh": "已确认", "ja": "確認済み"}
         confirm_msgs = {
-            "vi": "Danh sách các cặp CTTT đã được cập nhật.",
-            "en": "CTTT pair list has been updated.",
-            "zh": "CTTT配对列表已更新。",
-            "ja": "CTTTペアリストが更新されました。"
+            "vi": f"Đã xác nhận {len(self.new_files)} cặp CTTT.",
+            "en": f"Confirmed {len(self.new_files)} CTTT pairs.",
+            "zh": f"已确认 {len(self.new_files)} 对CTTT文件。",
+            "ja": f"{len(self.new_files)} 件のCTTTペアを確認しました。"
         }
-        messagebox.showinfo(confirm_titles.get(lang, confirm_titles["vi"]), confirm_msgs.get(lang, confirm_msgs["vi"]))
-        self.confirmation_window.destroy()
+        messagebox.showinfo(confirm_titles.get(lang, confirm_titles["vi"]), confirm_msgs.get(lang, confirm_msgs["vi"]), parent=self.master)
+        if hasattr(self, 'confirmation_window') and self.confirmation_window:
+            try:
+                self.confirmation_window.destroy()
+            except Exception:
+                pass
 
     # ========== RUN COMPARISON ==========
     def run_comparison(self):
@@ -658,6 +1010,8 @@ class MainWindow:
                 "pdf_diff_threshold": self.pdf_diff_threshold.get(),
                 "pdf_dilate_size": self.pdf_dilate_size.get(),
                 "pdf_dilate_iterations": self.pdf_dilate_iterations.get(),
+                "doc_mode": self.doc_mode_var.get(),
+                "print_area": self.print_area_var.get(),
             })
         
         self.btn_run.config(state="disabled")
@@ -680,6 +1034,8 @@ class MainWindow:
                 "output_folder": self.result_path.get().strip() or None,
                 "suppress_error": self.suppress_error_popups.get(),
                 "use_pdf_method": self.use_pdf_method.get(),
+                "doc_mode": self.doc_mode_var.get(),
+                "print_area": self.print_area_var.get(),
                 
                 # Highlight Colors (Critical - was missing)
                 "highlight_base_color": self.highlight_base_color,
@@ -956,6 +1312,19 @@ class MainWindow:
         if hasattr(self, 'file_card'):
             self.file_card.config(text=file_card_texts.get(lang, file_card_texts["vi"]))
         
+        # Document mode
+        if hasattr(self, 'lbl_doc_mode'):
+            self.lbl_doc_mode.config(text=get_text("doc_type_label", lang))
+        if hasattr(self, 'doc_mode_combo'):
+            curr_idx = self.doc_mode_combo.current()
+            self.doc_mode_combo.config(values=[
+                get_text("mode_standard_cttt", lang),
+                get_text("mode_dukc_cttt", lang),
+                get_text("mode_dukc_other", lang)
+            ])
+            if curr_idx >= 0:
+                self.doc_mode_combo.current(curr_idx)
+
         # Screen mode label
         screen_mode_texts = {"vi": "Chế độ màn hình:", "en": "Screen mode:", "zh": "屏幕模式:", "ja": "画面モード:"}
         if hasattr(self, 'lbl_screen_mode'):
@@ -1220,6 +1589,7 @@ class MainWindow:
         menubar.add_cascade(label=titles["help"], menu=help_menu)
         help_menu.add_command(label=h_items[0], command=self.show_help, accelerator="F1")
         help_menu.add_command(label=h_items[1], command=self._show_shortcuts)
+        help_menu.add_command(label="Check for updates", command=lambda: self._check_updates_in_background(manual=True))
         help_menu.add_separator()
         
         about_title = h_items[2]
@@ -1365,7 +1735,7 @@ class MainWindow:
             messagebox.showwarning(titles.get(lang, titles["vi"]), no_folder_msgs.get(lang, no_folder_msgs["vi"]))
 
     # ========== AUTO UPDATE ==========
-    def _check_for_updates(self):
+    def _legacy_check_for_updates(self):
         """Kiểm tra phiên bản mới từ server"""
         try:
             from services.update_service import check_for_update, perform_update, get_current_version
@@ -1401,6 +1771,60 @@ class MainWindow:
             # Không hiển thị lỗi cho user, chỉ log
             import logging
             logging.warning(f"Không thể kiểm tra update: {e}")
+    def _check_updates_in_background(self, manual=False):
+        """Run all LAN catalog access away from Tkinter's event loop.
+
+        There is intentionally no short probe timeout. SMB can take several
+        seconds to establish a connection; timing out early causes real updates
+        to be missed. A disconnected share can only delay this daemon worker,
+        never the application UI.
+        """
+        def worker():
+            try:
+                from services.update_service import check_for_update
+                result = check_for_update()
+                self.master.after(0, lambda: self._show_update_candidate(result, manual))
+            except Exception as exc:
+                self.master.after(0, lambda: self._show_update_error(exc, manual))
+
+        threading.Thread(target=worker, name="sosanh-cttt-update-check", daemon=True).start()
+
+    def _show_update_candidate(self, result, manual):
+        has_update, newest_ver, candidate = result
+        if not has_update:
+            if manual:
+                messagebox.showinfo("Software update", "No newer release was found.")
+            return
+        message = f"New version {newest_ver} is available.\n\nInstall it now?"
+        if candidate.notes:
+            message += f"\n\nRelease notes:\n{candidate.notes}"
+        if messagebox.askyesno("Software update", message):
+            self.update_status("Downloading and verifying update installer...")
+            threading.Thread(
+                target=self._download_update_installer,
+                args=(candidate,),
+                name="sosanh-cttt-update-download",
+                daemon=True,
+            ).start()
+
+    def _download_update_installer(self, candidate):
+        try:
+            from services.release_update_service import download_installer
+            installer = download_installer(candidate)
+            self.master.after(0, lambda: self._launch_verified_installer(installer))
+        except Exception as exc:
+            self.master.after(0, lambda: self._show_update_error(exc, True))
+
+    def _launch_verified_installer(self, installer):
+        import subprocess
+        self.master.destroy()
+        subprocess.Popen([str(installer), "/SP-", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"], close_fds=True)
+
+    def _show_update_error(self, error, manual):
+        import logging
+        logging.warning("Update check/install failed: %s", error)
+        if manual:
+            messagebox.showwarning("Software update", f"Could not check or install the update:\n{error}")
 
 
 def main():

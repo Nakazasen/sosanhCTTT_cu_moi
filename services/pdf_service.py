@@ -100,13 +100,44 @@ class PDFService:
     
     def _init_excel(self):
         """Initialize Excel COM application with performance optimizations."""
+        if self.excel_app is not None:
+            try:
+                _ = self.excel_app.Workbooks.Count
+            except Exception:
+                utils.logger.info("Existing Excel COM instance stale, reinitializing...")
+                self._cleanup_excel()
+
         if self.excel_app is None:
             pythoncom.CoInitialize()
-            self.excel_app = win32com.client.Dispatch("Excel.Application")
-            self.excel_app.Visible = False
-            self.excel_app.DisplayAlerts = False
-            self.excel_app.EnableEvents = False
-            self.excel_app.Interactive = False
+            try:
+                self.excel_app = win32com.client.DispatchEx("Excel.Application")
+            except Exception as e:
+                utils.logger.warning(f"DispatchEx failed, trying Dispatch: {e}")
+                try:
+                    self.excel_app = win32com.client.Dispatch("Excel.Application")
+                except Exception as e2:
+                    utils.logger.error(f"Failed to create Excel.Application instance: {e2}")
+                    raise
+            
+            try:
+                self.excel_app.Visible = False
+            except Exception as e:
+                utils.logger.warning(f"Could not set Visible=False on Excel.Application: {e}")
+                
+            try:
+                self.excel_app.DisplayAlerts = False
+            except Exception:
+                pass
+                
+            try:
+                self.excel_app.EnableEvents = False
+            except Exception:
+                pass
+                
+            try:
+                self.excel_app.Interactive = False
+            except Exception:
+                pass
             
             # === PERFORMANCE OPTIMIZATION (Cấp độ 1) ===
             # Tắt cập nhật màn hình và tính toán tự động
@@ -126,7 +157,10 @@ class PDFService:
             except Exception:
                 pass
             
-            self.excel_pid = utils.get_excel_pid(self.excel_app)
+            try:
+                self.excel_pid = utils.get_excel_pid(self.excel_app)
+            except Exception:
+                self.excel_pid = None
 
     
     def _cleanup_excel(self):
@@ -152,6 +186,7 @@ class PDFService:
             List of sheet names with correct tab color
         """
         colored_sheets = []
+        workbook = None
         try:
             self._init_excel()
             
@@ -167,18 +202,80 @@ class PDFService:
             )
             
             for sheet in workbook.Sheets:
-                if sheet.Tab.Color == config.COLOR_GREEN_TAB:
-                    colored_sheets.append(sheet.Name.rstrip())
+                try:
+                    if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                        colored_sheets.append(sheet.Name.rstrip())
+                except Exception:
+                    continue
             
-            workbook.Close(SaveChanges=False)
             utils.logger.info(f"Found {len(colored_sheets)} green-tab sheets: {colored_sheets}")
             
         except Exception as e:
             utils.logger.error(f"Error getting colored sheets: {e}")
+        finally:
+            if workbook:
+                try:
+                    workbook.Close(SaveChanges=False)
+                except Exception:
+                    pass
         
         return colored_sheets
+
+    def get_visible_sheets(self, file_path):
+        """
+        Lấy danh sách các Sheet đang hiển thị (Visible != 0 / xlSheetHidden).
+        Tự động bỏ qua các sheet ẩn hệ thống và sheet trống hoàn toàn.
+        """
+        import time
+        visible_sheets = []
+        for attempt in range(2):
+            workbook = None
+            try:
+                self._init_excel()
+                utils.unblock_file(file_path)
+                
+                workbook = self.excel_app.Workbooks.Open(
+                    file_path, 
+                    ReadOnly=True, 
+                    UpdateLinks=False, 
+                    Notify=False, 
+                    AddToMru=False
+                )
+                
+                for sheet in workbook.Sheets:
+                    try:
+                        is_visible = (sheet.Visible == -1 or sheet.Visible is True or sheet.Visible == 1)
+                        if is_visible:
+                            s_name = sheet.Name.rstrip()
+                            try:
+                                used = sheet.UsedRange
+                                if used.Rows.Count == 1 and used.Columns.Count == 1:
+                                    if used.Value is None or str(used.Value).strip() == "":
+                                        utils.logger.info(f"Skipping empty sheet: '{s_name}'")
+                                        continue
+                            except Exception:
+                                pass
+                            visible_sheets.append(s_name)
+                    except Exception as e:
+                        utils.logger.warning(f"Error checking sheet visibility: {e}")
+                        continue
+                        
+                utils.logger.info(f"Found {len(visible_sheets)} visible sheets in {os.path.basename(file_path)}: {visible_sheets}")
+                break
+            except Exception as e:
+                utils.logger.error(f"Error getting visible sheets from {file_path} (attempt {attempt+1}): {e}")
+                self._cleanup_excel()
+                if attempt == 0:
+                    time.sleep(1)
+            finally:
+                if workbook:
+                    try:
+                        workbook.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+        return visible_sheets
     
-    def export_sheets_to_pdf(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76"):
+    def export_sheets_to_pdf(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76", _keep_alive=False):
         """
         Export specified sheets from Excel file to a single PDF.
         
@@ -192,7 +289,9 @@ class PDFService:
             True if successful, False otherwise
         """
         temp_pdf_files = []
+        exported_page_labels = []
         output_dir = os.path.dirname(output_pdf_path)
+        workbook = None  # Track for cleanup in finally
         
         try:
             self._init_excel()
@@ -236,43 +335,22 @@ class PDFService:
                     utils.logger.warning(f"Sheet '{sheet_name}' not found in {file_path}")
                     continue
                 
-                # Setup PageSetup for export
+                # Setup PageSetup for export (essential properties only for maximum speed)
                 try:
                     sheet.Activate()
                     ps = sheet.PageSetup
                     
-                    # Set print area
+                    # Set print area & essential fit: Fit width to 1 page, allow natural vertical paging
                     ps.PrintArea = print_area
-                    
-                    # Page settings
-                    ps.Orientation = 1  # Portrait
                     ps.PaperSize = 9    # A4
                     ps.Zoom = False
                     ps.FitToPagesWide = 1
-                    ps.FitToPagesTall = 1
-                    
-                    # Margins = 0
-                    ps.LeftMargin = 0
-                    ps.RightMargin = 0
-                    ps.TopMargin = 0
-                    ps.BottomMargin = 0
-                    ps.HeaderMargin = 0
-                    ps.FooterMargin = 0
-                    
-                    # Center on page
+                    ps.FitToPagesTall = False
                     ps.CenterHorizontally = True
-                    ps.CenterVertically = True
-                    
-                    # No gridlines
-                    ps.PrintGridlines = False
-                    ps.PrintHeadings = False
-                    
                 except Exception as e:
                     utils.logger.error(f"Error setting up sheet '{sheet_name}': {e}")
                 
                 # Export to temp PDF
-                # Sử dụng hàm sanitize strict để đảm bảo tên file hợp lệ trên Windows
-                # Thêm UUID để tránh trùng tên khi xử lý nhiều sheet cùng tên
                 safe_name = utils.sanitize_filename_strict(sheet_name)
                 unique_id = str(uuid.uuid4())[:8]
                 temp_pdf = os.path.join(output_dir, f"temp_sheet_{idx}_{safe_name}_{unique_id}.pdf")
@@ -290,6 +368,18 @@ class PDFService:
                     
                     if os.path.exists(temp_pdf):
                         temp_pdf_files.append(temp_pdf)
+                        try:
+                            import fitz
+                            doc = fitz.open(temp_pdf)
+                            p_cnt = len(doc)
+                            doc.close()
+                        except Exception:
+                            p_cnt = 1
+                        if p_cnt <= 1:
+                            exported_page_labels.append(sheet_name)
+                        else:
+                            for p in range(p_cnt):
+                                exported_page_labels.append(f"{sheet_name}_P{p+1}")
                     else:
                         utils.logger.error(f"Failed to create PDF for sheet '{sheet_name}'")
                         
@@ -297,6 +387,9 @@ class PDFService:
                     utils.logger.error(f"Error exporting sheet '{sheet_name}' to PDF: {e}")
             
             workbook.Close(SaveChanges=False)
+            workbook = None  # Mark closed to prevent double-close in finally
+            
+            self.last_exported_page_labels = exported_page_labels
             
             # Merge PDFs if multiple
             if not temp_pdf_files:
@@ -329,14 +422,136 @@ class PDFService:
             utils.logger.error(f"Error in export_sheets_to_pdf: {e}")
             return False
         finally:
-            self._cleanup_excel()
+            # Close workbook if still open (safety net for exceptions mid-loop)
+            if workbook:
+                try:
+                    workbook.Close(SaveChanges=False)
+                except:
+                    pass
+            # Only cleanup Excel if not managed by the outer retry wrapper
+            if not _keep_alive:
+                self._cleanup_excel()
+
+    def export_green_sheets_direct(self, file_path, output_pdf_path, print_area="EX1:GR76", _keep_alive=True):
+        """
+        Single-pass high-speed: Detects all green-tab sheets in file_path and exports them to PDF directly.
+        Eliminates opening the workbook twice.
+        Returns: (success: bool, green_sheet_names: list)
+        """
+        colored_sheets = []
+        workbook = None
+        temp_pdf_files = []
+        output_dir = os.path.dirname(output_pdf_path)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        try:
+            self._init_excel()
+            utils.unblock_file(file_path)
+            
+            workbook = self.excel_app.Workbooks.Open(
+                file_path,
+                ReadOnly=True,
+                UpdateLinks=False,
+                Notify=False,
+                AddToMru=False
+            )
+            
+            green_sheets = []
+            for sheet in workbook.Sheets:
+                try:
+                    if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                        green_sheets.append(sheet)
+                except Exception:
+                    continue
+                    
+            if not green_sheets:
+                utils.logger.warning(f"No green-tab sheets found in {file_path}")
+                return False, []
+                
+            for idx, sheet in enumerate(green_sheets, 1):
+                sheet_name = sheet.Name.rstrip()
+                try:
+                    sheet.Activate()
+                    ps = sheet.PageSetup
+                    ps.PrintArea = print_area
+                    ps.PaperSize = 9
+                    ps.Zoom = False
+                    ps.FitToPagesWide = 1
+                    ps.FitToPagesTall = False
+                    ps.CenterHorizontally = True
+                except Exception as e:
+                    utils.logger.warning(f"PageSetup failed for '{sheet_name}': {e}")
+                    
+                safe_name = utils.sanitize_filename_strict(sheet_name)
+                unique_id = str(uuid.uuid4())[:8]
+                temp_pdf = os.path.join(output_dir, f"temp_green_{idx}_{safe_name}_{unique_id}.pdf")
+                
+                try:
+                    sheet.Select()
+                    sheet.ExportAsFixedFormat(
+                        Type=0,  # xlTypePDF
+                        Filename=temp_pdf,
+                        Quality=0,
+                        IncludeDocProperties=True,
+                        IgnorePrintAreas=False,
+                        OpenAfterPublish=False
+                    )
+                    if os.path.exists(temp_pdf):
+                        temp_pdf_files.append(temp_pdf)
+                        try:
+                            import fitz
+                            doc = fitz.open(temp_pdf)
+                            p_cnt = len(doc)
+                            doc.close()
+                        except Exception:
+                            p_cnt = 1
+                        if p_cnt <= 1:
+                            colored_sheets.append(sheet_name)
+                        else:
+                            for p in range(p_cnt):
+                                colored_sheets.append(f"{sheet_name}_P{p+1}")
+                except Exception as e:
+                    utils.logger.error(f"Error exporting green sheet '{sheet_name}' to PDF: {e}")
+                    
+            workbook.Close(SaveChanges=False)
+            workbook = None
+            
+            if not temp_pdf_files:
+                return False, colored_sheets
+                
+            if len(temp_pdf_files) > 1:
+                success = self.merge_pdfs(temp_pdf_files, output_pdf_path)
+            else:
+                shutil.move(temp_pdf_files[0], output_pdf_path)
+                temp_pdf_files = []
+                success = True
+                
+            for temp_pdf in temp_pdf_files:
+                try:
+                    if os.path.exists(temp_pdf):
+                        os.remove(temp_pdf)
+                except:
+                    pass
+                    
+            return success, colored_sheets
+        except Exception as e:
+            utils.logger.error(f"Single-pass green sheet export failed for {file_path}: {e}")
+            return False, colored_sheets
+        finally:
+            if workbook:
+                try:
+                    workbook.Close(SaveChanges=False)
+                except Exception:
+                    pass
+            if not _keep_alive:
+                self._cleanup_excel()
     
     # =========================================================================
     # PDF EXPORT WITH RETRY (LEGACY COMPATIBLE)
     # =========================================================================
     
     def export_sheets_to_pdf_with_retry(self, file_path, sheet_names, output_pdf_path, 
-                                         print_area="EX1:GR76", max_retries=3):
+                                         print_area="EX1:GR76", max_retries=3, _keep_alive=False):
         """
         Export sheets to PDF with retry mechanism and fallback.
         
@@ -351,6 +566,7 @@ class PDFService:
             output_pdf_path: Output PDF path
             print_area: Print area range
             max_retries: Number of retry attempts
+            _keep_alive: If True, keep Excel alive for subsequent calls
             
         Returns:
             True if successful, False otherwise
@@ -363,34 +579,38 @@ class PDFService:
             utils.logger.info(f"Using fallback path: {safe_output_path}")
             output_pdf_path = safe_output_path
         
-        for attempt in range(max_retries):
-            try:
-                utils.logger.info(f"PDF export attempt {attempt + 1}/{max_retries}")
-                
-                # Try main method
-                success = self.export_sheets_to_pdf(file_path, sheet_names, output_pdf_path, print_area)
-                if success and os.path.exists(output_pdf_path):
-                    utils.logger.info(f"PDF export successful on attempt {attempt + 1}")
-                    return True
-                
-                # If main method failed, try fallback
-                utils.logger.warning(f"Main method failed, trying fallback...")
-                success = self._export_pdf_fallback(file_path, sheet_names, output_pdf_path, print_area)
-                if success and os.path.exists(output_pdf_path):
-                    utils.logger.info(f"Fallback export successful")
-                    return True
-                
-                utils.logger.warning(f"Attempt {attempt + 1} failed")
-                if attempt < max_retries - 1:
-                    time.sleep(2)
+        try:
+            for attempt in range(max_retries):
+                try:
+                    utils.logger.info(f"PDF export attempt {attempt + 1}/{max_retries}")
                     
-            except Exception as e:
-                utils.logger.error(f"Error on attempt {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-        
-        utils.logger.error(f"All {max_retries} attempts failed")
-        return False
+                    # === FIX: Keep Excel alive between retries (saves 2-5s startup cost per retry) ===
+                    success = self.export_sheets_to_pdf(file_path, sheet_names, output_pdf_path, print_area, _keep_alive=True)
+                    if success and os.path.exists(output_pdf_path):
+                        utils.logger.info(f"PDF export successful on attempt {attempt + 1}")
+                        return True
+                    
+                    # If main method failed, try fallback (will reuse self.excel_app)
+                    utils.logger.warning(f"Main method failed, trying fallback...")
+                    success = self._export_pdf_fallback(file_path, sheet_names, output_pdf_path, print_area)
+                    if success and os.path.exists(output_pdf_path):
+                        utils.logger.info(f"Fallback export successful")
+                        return True
+                    
+                    utils.logger.warning(f"Attempt {attempt + 1} failed")
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                        
+                except Exception as e:
+                    utils.logger.error(f"Error on attempt {attempt + 1}: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+            
+            utils.logger.error(f"All {max_retries} attempts failed")
+            return False
+        finally:
+            if not _keep_alive:
+                self._cleanup_excel()
     
     def _export_pdf_fallback(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76"):
         """
@@ -402,27 +622,47 @@ class PDFService:
         import pythoncom
         import win32com.client
         
-        excel = None
+        own_excel = False
         workbook = None
         new_workbook = None
         temp_excel_path = None
+        excel = None
         
         try:
-            pythoncom.CoInitialize()
-            
             temp_excel_path = os.path.join(os.path.dirname(output_pdf_path), f"temp_export_{int(time.time())}.xlsx")
             
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            excel.ScreenUpdating = True
-            excel.EnableEvents = False
-            
-            try:
-                excel.Interactive = False
-                excel.WindowState = -4140  # xlMinimized
-            except:
-                pass
+            # === FIX: Reuse existing Excel instance to avoid 2-5s startup overhead ===
+            if self.excel_app is not None:
+                excel = self.excel_app
+                utils.logger.debug("Fallback: Reusing existing Excel instance")
+            else:
+                pythoncom.CoInitialize()
+                try:
+                    excel = win32com.client.Dispatch("Excel.Application")
+                except Exception:
+                    excel = win32com.client.DispatchEx("Excel.Application")
+                try:
+                    excel.Visible = False
+                except Exception:
+                    pass
+                try:
+                    excel.DisplayAlerts = False
+                except Exception:
+                    pass
+                try:
+                    excel.ScreenUpdating = False
+                except Exception:
+                    pass
+                try:
+                    excel.EnableEvents = False
+                except Exception:
+                    pass
+                try:
+                    excel.Interactive = False
+                    excel.WindowState = -4140  # xlMinimized
+                except Exception:
+                    pass
+                own_excel = True
             
             # Unblock and open source file
             utils.unblock_file(file_path)
@@ -430,8 +670,10 @@ class PDFService:
             
             # Create new workbook
             new_workbook = excel.Workbooks.Add()
+            default_sheet_count = new_workbook.Sheets.Count
             
-            # Copy sheets
+            # Copy sheets in exact order
+            copied_count = 0
             for i, sheet_name in enumerate(sheet_names):
                 try:
                     source_sheet = None
@@ -455,8 +697,9 @@ class PDFService:
                                 break
                     
                     if source_sheet:
-                        source_sheet.Copy(Before=new_workbook.Sheets(1))
-                        copied_sheet = new_workbook.Sheets(1)
+                        source_sheet.Copy(After=new_workbook.Sheets(new_workbook.Sheets.Count))
+                        copied_sheet = new_workbook.Sheets(new_workbook.Sheets.Count)
+                        copied_count += 1
                         
                         # Setup PageSetup
                         try:
@@ -483,11 +726,16 @@ class PDFService:
                 except Exception as e:
                     utils.logger.error(f"Error copying sheet {sheet_name}: {e}")
             
+            if copied_count == 0:
+                utils.logger.error("Fallback: No sheets were copied")
+                return False
+                
             # Remove default empty sheets
-            while new_workbook.Sheets.Count > len(sheet_names):
+            for _ in range(default_sheet_count):
                 try:
-                    new_workbook.Sheets(new_workbook.Sheets.Count).Delete()
-                except:
+                    if new_workbook.Sheets.Count > copied_count:
+                        new_workbook.Sheets(1).Delete()
+                except Exception:
                     break
             
             # Save temp file
@@ -520,17 +768,19 @@ class PDFService:
                     workbook.Close(SaveChanges=False)
             except:
                 pass
-            try:
-                if excel:
-                    excel.Quit()
-            except:
-                pass
+            # === FIX: Only quit Excel if we created it, don't kill caller's instance ===
+            if own_excel:
+                try:
+                    if excel:
+                        excel.Quit()
+                except:
+                    pass
+                pythoncom.CoUninitialize()
             try:
                 if temp_excel_path and os.path.exists(temp_excel_path):
                     os.remove(temp_excel_path)
             except:
                 pass
-            pythoncom.CoUninitialize()
     
     # =========================================================================
     # PDF MERGING

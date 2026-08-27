@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "startup_check": true,
+  "sources": [
+    {
+      "type": "folder",
+      "location": "\\\\fstvn01\\Data\\10_Production Engineering Department(\u88fd\u9020\u6280\u8853\u90e8)\\02.\u88fd\u9020\u6280\u8853\u8ab2\\PE Dept\\15. FORM\uff08BIEU MAU\uff09-\u5f62\u5f0f\\Form_VBA\\Form_Phanmem_sosanhCTTT\\release_update",
+      "enabled": true
+    }
+  ]
+}

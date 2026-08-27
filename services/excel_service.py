@@ -212,91 +212,104 @@ class ExcelService:
         
         return new_name  # Fallback to original
 
-    def standard_preprocess(self, file_path, auto_add_b=False, new_sheet_names_ref=None):
+    def standard_preprocess(self, file_path, is_new=True, auto_add_b=False, new_sheet_names_ref=None):
         """
-        Performs standard preprocessing:
+        Performs standard preprocessing matching Legacy v7.03 behavior:
         - Rename file (replace underscores)
-        - Rename sheets (replace special chars)
-        - Change font to Times New Roman for specific range
-        - Add 'b' prefix to sheet names if needed (for Old files)
+        - Rename sheets (replace special characters _, ., ,, |)
+        - Change font to Times New Roman for EX:ZZ
+        - Add 'b' prefix if auto_add_b is enabled
         
         Args:
             file_path (str): Path to the Excel file.
-            auto_add_b (bool): Whether to auto-add 'b' prefix.
-            new_sheet_names_ref (list): List of (original, final) new sheet names for reference (only for old files).
+            is_new (bool): True for new files (processes green-tab sheets), False for old files (processes all sheets).
+            auto_add_b (bool): Whether to auto-add 'b' prefix for barcode comparison.
+            new_sheet_names_ref (list): List of (original, final) or final sheet names from the corresponding new file.
         
         Returns:
-            str: The path to the processed file (renamed if applicable).
+            tuple: (final_file_path, sheet_name_mapping)
         """
         # 1. Safe Rename File
         final_file_path = utils.safe_rename_file(file_path)
         final_file_path = os.path.abspath(final_file_path)
-        utils.unblock_file(final_file_path) # Unblock before processing too
+        utils.unblock_file(final_file_path)
         
         # 2. Open Workbook
         wb = self.open_workbook(final_file_path, read_only=False)
         if not wb:
-            return final_file_path # Failed to open, return path as is
+            return final_file_path, []
             
+        sheet_name_mapping = []
         try:
             modified = False
             
-            # 3. Iterate Sheets - CHỈ XỬ LÝ SHEETS CÓ MÀU TAB XANH (legacy behavior)
-            for sheet in wb.Sheets:
-                # CRITICAL: Chỉ xử lý sheet có màu tab xanh (5296274)
-                try:
-                    if sheet.Tab.Color != config.COLOR_GREEN_TAB:
+            # Determine sheets to process
+            if is_new:
+                # File mới: Chỉ xử lý sheet có màu tab xanh (5296274)
+                sheets_to_process = []
+                for sheet in wb.Sheets:
+                    try:
+                        if sheet.Tab.Color == config.COLOR_GREEN_TAB:
+                            sheets_to_process.append(sheet)
+                    except Exception:
                         continue
-                except:
-                    continue
-                
+            else:
+                # File cũ: Duyệt tất cả các sheet trong workbook
+                sheets_to_process = list(wb.Sheets)
+            
+            for sheet in sheets_to_process:
                 original_name = sheet.Name
                 new_name = original_name.rstrip()
                 
-                # Normalize Chars
+                # Normalize Chars (_, ., ,, | -> - hoặc khoảng trắng)
                 new_name = new_name.replace("_", "-").replace(".", "-").replace(",", "-").replace("|", " ")
                 
-                # Logic to add 'b' (Only for Old Files, requires new_sheet_names_ref)
-                if auto_add_b and new_sheet_names_ref:
-                    if not new_name.lower().startswith('b'):
-                         # Try to match with new sheets
-                         for final_new_name in new_sheet_names_ref:
-                             if final_new_name.lower().startswith('b'):
-                                 # Compare without 'b'
-                                 normalized_check = final_new_name[1:]
-                                 if new_name == normalized_check:
-                                     new_name = 'b' + new_name
-                                     break
-
+                if is_new:
+                    # File mới: thêm 'b' nếu bật auto_add_b và chưa có 'b'
+                    if auto_add_b and not new_name.lower().startswith('b'):
+                        new_name = 'b' + new_name
+                else:
+                    # File cũ: thêm 'b' nếu sheet tương ứng trong file mới có 'b'
+                    if auto_add_b and new_sheet_names_ref:
+                        for ref in new_sheet_names_ref:
+                            # ref có thể là tuple (orig, final) hoặc chuỗi final_name
+                            final_new_name = ref[1] if isinstance(ref, (list, tuple)) else str(ref)
+                            if final_new_name.lower().startswith('b'):
+                                target_check = final_new_name[1:]
+                                if (new_name == target_check or 
+                                    new_name.replace("_", "-").replace(".", "-").replace(",", "-").replace("|", " ") == target_check):
+                                    if not new_name.lower().startswith('b'):
+                                        new_name = 'b' + new_name
+                                    break
+                
                 # Rename if changed
                 if new_name != original_name:
                     try:
-                        # Đảm bảo tên sheet duy nhất
                         unique_name = self._make_unique_sheet_name(wb, new_name)
                         sheet.Name = unique_name
                         modified = True
+                        sheet_name_mapping.append((original_name, unique_name))
                         utils.logger.info(f"Renamed sheet: '{original_name}' → '{unique_name}'")
                     except Exception as e:
-                        utils.logger.warning(f"Could not rename sheet {original_name} to {new_name}: {e}")
-
-                # Change Font for EX:ZZ
+                        utils.logger.warning(f"Could not rename sheet '{original_name}' to '{new_name}': {e}")
+                        sheet_name_mapping.append((original_name, original_name))
+                else:
+                    sheet_name_mapping.append((original_name, original_name))
+                
+                # Change Font for EX1:ZZ80 (Targeted CTTT range for fast execution)
                 try:
-                    sheet.Range("EX:ZZ").Font.Name = "Times New Roman"
+                    sheet.Range("EX1:ZZ80").Font.Name = "Times New Roman"
                     modified = True
                 except Exception:
                     pass
-
+            
             if modified:
                 wb.Save()
                 utils.logger.info(f"Preprocessed and saved: {os.path.basename(final_file_path)}")
                 
-            # Collect final sheet names for reference
-            final_sheet_names = [sheet.Name for sheet in wb.Sheets]
-                
         except Exception as e:
             utils.logger.error(f"Preprocessing failed for {file_path}: {e}")
-            final_sheet_names = []
         finally:
             self.close_workbook(wb)
             
-        return final_file_path, final_sheet_names
+        return final_file_path, sheet_name_mapping

@@ -7,13 +7,25 @@ import psutil
 import win32process
 import win32gui
 
-# Setup basic console logging initially
+# Safe UTF-8 configuration for Windows consoles
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+# Setup basic console logging initially with safe encoding
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[console_handler]
 )
 logger = logging.getLogger("CTTT_Comparator")
 
@@ -370,3 +382,45 @@ def wait_for_file(filepath, timeout=10, check_interval=0.5):
     
     return False
 
+
+def is_network_path(path):
+    """
+    Kiểm tra xem đường dẫn có nằm trên ổ mạng nội bộ (UNC share hoặc mapped network drive) không.
+    """
+    if not path or not isinstance(path, str):
+        return False
+    norm = os.path.normpath(path)
+    if norm.startswith(r"\\") or norm.startswith("//"):
+        return True
+    try:
+        import win32file
+        drive = os.path.splitdrive(norm)[0]
+        if drive:
+            drive_root = drive + "\\" if not drive.endswith("\\") else drive
+            drive_type = win32file.GetDriveType(drive_root)
+            if drive_type == win32file.DRIVE_REMOTE:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def sync_folder_to_destination(src_dir, dst_dir):
+    """
+    Sao chép toàn bộ các file từ src_dir sang dst_dir (sử dụng khi đồng bộ kết quả từ local SSD lên ổ mạng).
+    """
+    os.makedirs(dst_dir, exist_ok=True)
+    synced_files = []
+    for root, dirs, files in os.walk(src_dir):
+        rel_path = os.path.relpath(root, src_dir)
+        target_root = os.path.normpath(os.path.join(dst_dir, rel_path)) if rel_path != "." else dst_dir
+        os.makedirs(target_root, exist_ok=True)
+        for f in files:
+            src_file = os.path.join(root, f)
+            dst_file = os.path.join(target_root, f)
+            try:
+                shutil.copy2(src_file, dst_file)
+                synced_files.append(dst_file)
+            except Exception as e:
+                logger.warning(f"Could not copy {src_file} to {dst_file}: {e}")
+    return synced_files

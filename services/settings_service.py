@@ -12,8 +12,9 @@ class SettingsService:
     def _get_settings_path(self):
         """Determines the correct path for the settings file (EXE vs Script)."""
         if getattr(sys, 'frozen', False):
-            # Running as PyInstaller Bundle
-            app_dir = os.path.dirname(sys.executable)
+            # Installer files are replaceable; user state must survive an upgrade.
+            app_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "SosanhCTTTData")
+            os.makedirs(app_dir, exist_ok=True)
         else:
             # Running as Script
             # Go up one level from 'services' to root 'Refactored'
@@ -49,7 +50,9 @@ class SettingsService:
             
             # Other Settings
             "screen_mode": "pc",
-            "goto_address": config.DEFAULT_GOTO_ADDRESS
+            "goto_address": config.DEFAULT_GOTO_ADDRESS,
+            "doc_mode": config.DOC_MODE_STANDARD_CTTT,
+            "print_area": config.PRINT_AREA_STANDARD_CTTT
         }
         
         if os.path.exists(self.settings_file):

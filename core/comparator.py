@@ -1,4 +1,7 @@
 import os
+import sys
+import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from services.excel_service import ExcelService
@@ -118,57 +121,108 @@ class Comparator:
             raise ValueError("File lists must have equal length.")
             
         self.settings = settings
-        suppress = settings.get("suppress_error", True) if settings else True
-        self.excel_service = ExcelService(suppress_alerts=suppress)
-        
-        # Start timing
+              # Start timing
         start_time = time.time()
         
+        # Determine Output Folder
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        preferred_folder = settings.get("output_folder", None)
+        
+        if preferred_folder and os.path.exists(preferred_folder):
+            target_output_folder = os.path.join(preferred_folder, f"{config.DEFAULT_OUTPUT_FOLDER_NAME}_{timestamp}")
+        else:
+            target_output_folder = utils.get_writable_dir(os.path.dirname(new_file_list[0]), f"{config.DEFAULT_OUTPUT_FOLDER_NAME}_{timestamp}")
+        
+        target_output_folder = os.path.normpath(target_output_folder)
+        os.makedirs(target_output_folder, exist_ok=True)
+        utils.logger.info(f"Results will be saved to: {target_output_folder}")
+        
+        # Check if working with network paths (UNC share or remote drive)
+        is_network = (
+            any(utils.is_network_path(p) for p in new_file_list + old_file_list) or
+            utils.is_network_path(target_output_folder)
+        )
+        
+        local_temp_workspace = None
+        working_new_files = list(new_file_list)
+        working_old_files = list(old_file_list)
+        working_output_folder = target_output_folder
+        
+        if is_network:
+            import tempfile
+            local_temp_workspace = os.path.join(tempfile.gettempdir(), f"CTTT_FastCache_{os.getpid()}_{int(time.time())}")
+            os.makedirs(local_temp_workspace, exist_ok=True)
+            utils.logger.info(f"[Fast-Cache] Network drive detected. Created local SSD workspace: {local_temp_workspace}")
+            
+            # Fast copy input files to local SSD
+            if status_callback:
+                status_callback("Đang nạp file vào bộ nhớ đệm SSD...")
+                
+            local_in_new = os.path.join(local_temp_workspace, "Input_New")
+            local_in_old = os.path.join(local_temp_workspace, "Input_Old")
+            os.makedirs(local_in_new, exist_ok=True)
+            os.makedirs(local_in_old, exist_ok=True)
+            
+            working_new_files = []
+            for f in new_file_list:
+                local_f = os.path.join(local_in_new, os.path.basename(f))
+                shutil.copy2(f, local_f)
+                working_new_files.append(local_f)
+                
+            working_old_files = []
+            for f in old_file_list:
+                local_f = os.path.join(local_in_old, os.path.basename(f))
+                shutil.copy2(f, local_f)
+                working_old_files.append(local_f)
+                
+            working_output_folder = os.path.join(local_temp_workspace, "Output")
+            os.makedirs(working_output_folder, exist_ok=True)
+
+        suppress = settings.get("suppress_error", True) if settings else True
+        self.excel_service = ExcelService(suppress_alerts=suppress)
+
+        # Determine Document Mode & Print Area
+        doc_mode = settings.get("doc_mode", config.DOC_MODE_STANDARD_CTTT) if settings else config.DOC_MODE_STANDARD_CTTT
+        if doc_mode == config.DOC_MODE_DUKC_CTTT:
+            default_print_area = config.PRINT_AREA_DUKC_CTTT
+        elif doc_mode == config.DOC_MODE_DUKC_OTHER:
+            default_print_area = config.PRINT_AREA_DUKC_OTHER
+        else:
+            default_print_area = config.PRINT_AREA_STANDARD_CTTT
+            
+        print_area = settings.get("print_area") if settings and settings.get("print_area") else default_print_area
+        utils.logger.info(f"Comparison Mode: {doc_mode}, Print Area: {print_area}")
+
         try:
             # --- Preprocessing Phase ---
-            if status_callback: status_callback("Preprocessing files...")
-            
             processed_new_files = []
             processed_old_files = []
             
-            # Preprocess New Files
-            new_sheet_names_collection = {} # Map file_idx -> list of (old, new) sheet names
-            
-            for idx, f_path in enumerate(new_file_list):
-                 # For new files, auto_add_b is False
-                 proc_path, sheet_names = self.excel_service.standard_preprocess(f_path, auto_add_b=False)
-                 processed_new_files.append(proc_path)
-                 new_sheet_names_collection[idx] = sheet_names
-                 
-            # Preprocess Old Files (with 'b' logic)
-            for idx, f_path in enumerate(old_file_list):
-                # Auto add 'b' if enabled
+            if doc_mode == config.DOC_MODE_STANDARD_CTTT:
+                if status_callback: status_callback("Preprocessing files...")
+                
+                # Preprocess New Files
+                new_sheet_names_collection = {} # Map file_idx -> list of (old, new) sheet names
                 do_auto_b = settings.get("auto_add_b", False) if settings else False
                 
-                # Get reference sheet names from corresponding new file
-                ref_names = new_sheet_names_collection.get(idx, [])
-                
-                proc_path, _ = self.excel_service.standard_preprocess(f_path, auto_add_b=do_auto_b, new_sheet_names_ref=ref_names) 
-                processed_old_files.append(proc_path)
-
-            # --- Comparison Phase ---
-            # Create Output Folder
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            preferred_folder = settings.get("output_folder", None)
-            
-            if preferred_folder and os.path.exists(preferred_folder):
-                output_folder = os.path.join(preferred_folder, f"{config.DEFAULT_OUTPUT_FOLDER_NAME}_{timestamp}")
+                for idx, f_path in enumerate(working_new_files):
+                     proc_path, sheet_mapping = self.excel_service.standard_preprocess(f_path, is_new=True, auto_add_b=do_auto_b)
+                     processed_new_files.append(proc_path)
+                     new_sheet_names_collection[idx] = sheet_mapping
+                     
+                # Preprocess Old Files (with 'b' logic)
+                for idx, f_path in enumerate(working_old_files):
+                    ref_mapping = new_sheet_names_collection.get(idx, [])
+                    proc_path, _ = self.excel_service.standard_preprocess(f_path, is_new=False, auto_add_b=do_auto_b, new_sheet_names_ref=ref_mapping) 
+                    processed_old_files.append(proc_path)
             else:
-                output_folder = utils.get_writable_dir(os.path.dirname(new_file_list[0]), f"{config.DEFAULT_OUTPUT_FOLDER_NAME}_{timestamp}")
-            
-            output_folder = os.path.normpath(output_folder)
-            os.makedirs(output_folder, exist_ok=True)
-            
-            utils.logger.info(f"Results will be saved to: {output_folder}")
-            
+                # DUKC modes: Keep original format intact
+                processed_new_files = list(working_new_files)
+                processed_old_files = list(working_old_files)
+
             # Init Report
             from services.report_service import ReportService
-            self.report_service = ReportService(output_folder)
+            self.report_service = ReportService(working_output_folder)
             
             # ================================================================
             # STRATEGY PATTERN: PDF Workflow vs Screenshot Workflow
@@ -186,15 +240,15 @@ class Comparator:
                 self._process_legacy_pdf_workflow(
                     processed_new_files, 
                     processed_old_files, 
-                    output_folder, 
+                    working_output_folder, 
                     status_callback
                 )
                 
                 # Cleanup temp files
                 if status_callback:
                     status_callback("Dọn dẹp file tạm...")
-                CleanupService.cleanup_temp_images(output_folder, keep_diff_images=True)
-                CleanupService.cleanup_per_sheet_pdfs(output_folder)
+                CleanupService.cleanup_temp_images(working_output_folder, keep_diff_images=True)
+                CleanupService.cleanup_per_sheet_pdfs(working_output_folder)
                 
             else:
                 # STRATEGY B: Screenshot Comparison Workflow
@@ -203,17 +257,24 @@ class Comparator:
                     status_callback("Đang sử dụng phương pháp Screenshot (Cut/Paste)...")
                 
                 self._process_screenshot_workflow(
-                    processed_new_files,
-                    processed_old_files,
-                    output_folder,
+                    processed_new_files, 
+                    processed_old_files, 
+                    working_output_folder, 
                     status_callback
                 )
                 
                 # Cleanup temp files
                 if status_callback:
                     status_callback("Dọn dẹp file tạm...")
-                CleanupService.cleanup_temp_images(output_folder, keep_diff_images=True)
+                CleanupService.cleanup_temp_images(working_output_folder, keep_diff_images=True)
             
+            # Sync back to network output if Fast-Cache was active
+            if is_network and local_temp_workspace:
+                if status_callback:
+                    status_callback("Đang đồng bộ kết quả lên ổ mạng...")
+                utils.logger.info(f"[Fast-Cache] Syncing results from {working_output_folder} to {target_output_folder}")
+                utils.sync_folder_to_destination(working_output_folder, target_output_folder)
+
             # Calculate elapsed time
             elapsed_time = time.time() - start_time
             minutes, seconds = divmod(elapsed_time, 60)
@@ -222,7 +283,7 @@ class Comparator:
             utils.logger.info(f"Comparison completed in {int(minutes)} phút {seconds:.2f} giây")
             if status_callback: 
                 status_callback(f"Hoàn tất! Thời gian: {int(minutes)} phút {seconds:.2f} giây")
-            os.startfile(output_folder)
+            os.startfile(target_output_folder)
             
             return elapsed_time
                 
@@ -232,6 +293,11 @@ class Comparator:
         finally:
             if self.excel_service:
                 self.excel_service.cleanup()
+            if local_temp_workspace and os.path.exists(local_temp_workspace):
+                try:
+                    shutil.rmtree(local_temp_workspace, ignore_errors=True)
+                except Exception:
+                    pass
 
     def _aggregate_file_pair(self, new_path, old_path, wb_merged, meta_list):
         """
@@ -336,6 +402,15 @@ class Comparator:
         dilate_size = self.settings.get('pdf_dilate_size', config.DEFAULT_DILATE_SIZE) if self.settings else config.DEFAULT_DILATE_SIZE
         dilate_iterations = self.settings.get('pdf_dilate_iterations', config.DEFAULT_DILATE_ITERATIONS) if self.settings else config.DEFAULT_DILATE_ITERATIONS
         
+        doc_mode = self.settings.get('doc_mode', config.DOC_MODE_STANDARD_CTTT) if self.settings else config.DOC_MODE_STANDARD_CTTT
+        if doc_mode == config.DOC_MODE_DUKC_CTTT:
+            default_print_area = config.PRINT_AREA_DUKC_CTTT
+        elif doc_mode == config.DOC_MODE_DUKC_OTHER:
+            default_print_area = config.PRINT_AREA_DUKC_OTHER
+        else:
+            default_print_area = config.PRINT_AREA_STANDARD_CTTT
+        print_area = self.settings.get('print_area') if self.settings and self.settings.get('print_area') else default_print_area
+        
         total_files = len(new_file_list)
         all_comparison_pdfs = []  # For final merged PDF
         
@@ -348,35 +423,79 @@ class Comparator:
                 status_callback(f"Processing {idx+1}/{total_files}: {file_name}")
             
             try:
-                # Step 1: Get colored sheets from NEW file
-                colored_sheets = self.pdf_service.get_colored_sheets(new_path)
-                
-                if not colored_sheets:
-                    utils.logger.warning(f"No green-tab sheets found in {file_name}")
-                    self.report_service.add_result(file_name, "N/A", "WARNING", "Không tìm thấy sheet màu xanh")
-                    continue
-                
-                # Step 2: Export NEW file sheets to PDF
-                if status_callback:
-                    status_callback(f"Exporting PDF (NEW): {file_name}")
+                if doc_mode == config.DOC_MODE_STANDARD_CTTT:
+                    # STANDARD CTTT: Green sheets detection
+                    if status_callback:
+                        status_callback(f"Exporting PDF (NEW): {file_name}")
+                        
+                    pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
+                    success_new, colored_sheets = self.pdf_service.export_green_sheets_direct(new_path, pdf_new_path, print_area=print_area, _keep_alive=True)
                     
-                pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
-                success_new = self.pdf_service.export_sheets_to_pdf_with_retry(new_path, colored_sheets, pdf_new_path)
-                
-                if not success_new:
-                    self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF mới")
-                    continue
-                
-                # Step 3: Export OLD file sheets to PDF
-                if status_callback:
-                    status_callback(f"Exporting PDF (OLD): {os.path.basename(old_path)}")
+                    if not success_new or not colored_sheets:
+                        # Fallback
+                        colored_sheets = self.pdf_service.get_colored_sheets(new_path)
+                        if not colored_sheets:
+                            utils.logger.warning(f"No green-tab sheets found in {file_name}")
+                            self.report_service.add_result(file_name, "N/A", "WARNING", "Không tìm thấy sheet màu xanh")
+                            continue
+                        success_new = self.pdf_service.export_sheets_to_pdf_with_retry(new_path, colored_sheets, pdf_new_path, print_area=print_area)
+                        if not success_new:
+                            self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF mới")
+                            continue
                     
-                pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
-                success_old = self.pdf_service.export_sheets_to_pdf_with_retry(old_path, colored_sheets, pdf_old_path)
-                
-                if not success_old:
-                    self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
-                    continue
+                    # Step 3: Export OLD file sheets to PDF
+                    if status_callback:
+                        status_callback(f"Exporting PDF (OLD): {os.path.basename(old_path)}")
+                        
+                    pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
+                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(old_path, colored_sheets, pdf_old_path, print_area=print_area, _keep_alive=True)
+                    
+                    if not success_old:
+                        self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
+                        continue
+                    sheets_to_compare = colored_sheets
+                    
+                else:
+                    # DUKC / OTHER MODES: Visible sheets with exact sheet name matching
+                    if status_callback:
+                        status_callback(f"Reading visible sheets: {file_name}")
+                    visible_new = self.pdf_service.get_visible_sheets(new_path)
+                    visible_old = self.pdf_service.get_visible_sheets(old_path)
+                    
+                    matching_sheets = []
+                    for s in visible_new:
+                        if s in visible_old:
+                            matching_sheets.append(s)
+                        else:
+                            utils.logger.warning(f"Sheet '{s}' in NEW file not found in OLD file {os.path.basename(old_path)}")
+                            self.report_service.add_result(file_name, s, "MISSING", "Không tìm thấy sheet tương ứng ở file cũ")
+                            
+                    for s in visible_old:
+                        if s not in visible_new:
+                            utils.logger.warning(f"Sheet '{s}' in OLD file not found in NEW file {file_name}")
+                            self.report_service.add_result(file_name, s, "MISSING", "Sheet có trong file cũ nhưng không có trong file mới")
+                            
+                    if not matching_sheets:
+                        utils.logger.warning(f"No matching visible sheets found between {file_name} and {os.path.basename(old_path)}")
+                        self.report_service.add_result(file_name, "N/A", "WARNING", "Không tìm thấy sheet nào khớp tên giữa 2 file")
+                        continue
+                        
+                    if status_callback:
+                        status_callback(f"Exporting PDF (NEW): {file_name}")
+                    pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
+                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(new_path, matching_sheets, pdf_new_path, print_area=print_area, _keep_alive=True)
+                    if not success_new:
+                        self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF mới")
+                        continue
+                        
+                    if status_callback:
+                        status_callback(f"Exporting PDF (OLD): {os.path.basename(old_path)}")
+                    pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
+                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(old_path, matching_sheets, pdf_old_path, print_area=print_area, _keep_alive=True)
+                    if not success_old:
+                        self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
+                        continue
+                    sheets_to_compare = getattr(self.pdf_service, 'last_exported_page_labels', None) or matching_sheets
                 
                 # Step 4: Compare PDFs page by page
                 if status_callback:
@@ -390,7 +509,7 @@ class Comparator:
                 # === CẤP ĐỘ 2: XỬ LÝ SONG SONG (MULTITHREAD) ===
                 def compare_single_page(page_idx):
                     """So sánh một page đơn lẻ - được gọi trong thread pool"""
-                    sheet_name = colored_sheets[page_idx] if page_idx < len(colored_sheets) else f"Page_{page_idx}"
+                    sheet_name = sheets_to_compare[page_idx] if page_idx < len(sheets_to_compare) else f"Page_{page_idx}"
                     
                     img_new = new_images[page_idx]
                     img_old = old_images[page_idx]
@@ -399,10 +518,10 @@ class Comparator:
                     if OPENCV_AVAILABLE and compare_images_opencv:
                         # Quick check - skip heavy processing if identical
                         if quick_compare_hash(img_new, img_old):
-                            return (page_idx, sheet_name, None, False, "Không có sai khác")
+                            return (page_idx, sheet_name, None, False, "Không có sai khác", None)
                         
                         # Use OpenCV for fast comparison
-                        left_img, right_img = compare_images_opencv(
+                        left_img, right_img, has_diff, diff_count = compare_images_opencv(
                             img_new, img_old,
                             diff_threshold=threshold,
                             dilate_size=dilate_size,
@@ -410,47 +529,18 @@ class Comparator:
                             highlight_color=highlight_color,
                             fill_opacity=fill_opacity
                         )
-                        side_by_side = create_side_by_side(left_img, right_img)
-                        has_diff = True  # OpenCV always creates overlay, check bbox later
-                        
+                        side_by_side = create_side_by_side(left_img, right_img) if has_diff else None
                     else:
                         # Fallback: PIL-based comparison
-                        from PIL import ImageChops, ImageFilter, Image
-                        
-                        if img_new.size != img_old.size:
-                            img_old = img_old.resize(img_new.size, Image.Resampling.LANCZOS)
-                        
-                        diff = ImageChops.difference(img_new.convert('RGB'), img_old.convert('RGB'))
-                        diff_gray = diff.convert('L')
-                        mask = diff_gray.point(lambda x: 255 if x > threshold else 0)
-                        
-                        eff_dilate_size = dilate_size if dilate_size % 2 == 1 else max(1, dilate_size - 1)
-                        for _ in range(dilate_iterations):
-                            mask = mask.filter(ImageFilter.MaxFilter(eff_dilate_size))
-                        
-                        has_diff = mask.getbbox() is not None
-                        
-                        if has_diff:
-                            hex_color = highlight_color.lstrip('#')
-                            r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-                            alpha = int(255 * fill_opacity / 100)
-                            
-                            red_overlay = Image.new('RGBA', img_new.size, (r, g, b, alpha))
-                            overlay_masked = Image.new('RGBA', img_new.size, (0, 0, 0, 0))
-                            overlay_masked.paste(red_overlay, (0, 0), mask.convert('L'))
-                            
-                            combined_new = Image.alpha_composite(img_new.convert('RGBA'), overlay_masked)
-                            left_img = img_old.convert('RGB')
-                            right_img = combined_new.convert('RGB')
-                            
-                            side_width = left_img.width + right_img.width
-                            side_height = max(left_img.height, right_img.height)
-                            
-                            side_by_side = Image.new('RGB', (side_width, side_height), (255, 255, 255))
-                            side_by_side.paste(left_img, (0, 0))
-                            side_by_side.paste(right_img, (left_img.width, 0))
-                        else:
-                            side_by_side = None
+                        left_img, right_img, has_diff, diff_count = compare_images_pil(
+                            img_new, img_old,
+                            diff_threshold=threshold,
+                            dilate_size=dilate_size,
+                            dilate_iterations=dilate_iterations,
+                            highlight_color=highlight_color,
+                            fill_opacity=fill_opacity
+                        )
+                        side_by_side = create_side_by_side(left_img, right_img) if has_diff else None
                     
                     if has_diff and side_by_side:
                         safe_sheet_name = sheet_name.replace('|', '_').replace(' ', '_').replace('/', '_')
@@ -465,24 +555,36 @@ class Comparator:
                         return (page_idx, sheet_name, None, False, "Không có sai khác", None)
                 
                 # === CHẠY SONG SONG VỚI THREADPOOLEXECUTOR ===
-                max_workers = min(4, num_pages)  # Giới hạn 4 thread để tránh quá tải
+                max_workers = min(4, num_pages) if num_pages > 0 else 1
+                results_by_page = [None] * num_pages
                 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {executor.submit(compare_single_page, p): p for p in range(num_pages)}
                     
                     for future in as_completed(futures):
                         result = future.result()
-                        page_idx, sheet_name, comparison_img_path, has_diff, message = result[:5]
-                        comparison_pdf_path = result[5] if len(result) > 5 else None
-                        
-                        if has_diff and comparison_img_path:
-                            file_comparison_images[sheet_name] = comparison_img_path
-                            if comparison_pdf_path:
-                                file_comparison_pdfs.append(comparison_pdf_path)
-                                all_comparison_pdfs.append(comparison_pdf_path)
-                            self.report_service.add_result(file_name, sheet_name, "FAIL", message, comparison_img_path)
-                        else:
-                            self.report_service.add_result(file_name, sheet_name, "OK", message)
+                        p_idx = result[0]
+                        results_by_page[p_idx] = result
+                
+                # === GOM KẾT QUẢ THEO ĐÚNG THỨ TỰ TUẦN TỰ TRANG (P1 -> P2 -> P3) ===
+                for result in results_by_page:
+                    if result is None:
+                        continue
+                    page_idx, sheet_name, comparison_img_path, has_diff, message = result[:5]
+                    comparison_pdf_path = result[5] if len(result) > 5 else None
+                    
+                    if has_diff and comparison_img_path:
+                        file_comparison_images[sheet_name] = comparison_img_path
+                        if comparison_pdf_path:
+                            file_comparison_pdfs.append(comparison_pdf_path)
+                            all_comparison_pdfs.append(comparison_pdf_path)
+                        self.report_service.add_result(file_name, sheet_name, "FAIL", message, comparison_img_path)
+                    else:
+                        self.report_service.add_result(file_name, sheet_name, "OK", message)
+                
+                # === FIX 3: Free rendered images from RAM before next file ===
+                del new_images
+                del old_images
                 
                 # Step 5: Create per-file Excel result (LEGACY FORMAT)
                 if file_comparison_images:
@@ -498,7 +600,6 @@ class Comparator:
                         dpi=dpi
                     )
 
-                    
                     # Cleanup comparison images sau khi đã chèn vào Excel
                     for img_path in file_comparison_images.values():
                         try:
@@ -523,6 +624,14 @@ class Comparator:
                     # Xóa PDF cũ (không cần giữ)
                     if os.path.exists(pdf_old_path):
                         os.remove(pdf_old_path)
+                        
+                    # Xóa các file so sánh PDF tạm của file này
+                    for pdf_path in file_comparison_pdfs:
+                        try:
+                            if pdf_path and os.path.exists(pdf_path):
+                                os.remove(pdf_path)
+                        except Exception:
+                            pass
                 except Exception as e:
                     utils.logger.warning(f"Error during PDF cleanup/rename: {e}")
                     
@@ -530,12 +639,12 @@ class Comparator:
                 utils.logger.error(f"Error processing {file_name}: {e}")
                 self.report_service.add_result(file_name, "N/A", "ERROR", str(e))
         
-        # Cleanup all comparison PDFs - không cần nữa vì đã có Excel result
+        # Cleanup all comparison PDFs - toàn bộ ảnh so sánh đã nằm trọn vẹn trong file Excel kết quả
         for pdf_path in all_comparison_pdfs:
             try:
                 if pdf_path and os.path.exists(pdf_path):
                     os.remove(pdf_path)
-            except:
+            except Exception:
                 pass
         
         return all_comparison_pdfs
@@ -583,11 +692,13 @@ class Comparator:
                     self.report_service.add_result(file_name, "N/A", "ERROR", "Không thể mở file mới")
                     continue
                 
-                # Lấy danh sách sheet có màu xanh
                 colored_sheets = []
                 for sheet in wb_new.Sheets:
-                    if sheet.Tab.Color == config.COLOR_GREEN_TAB:
-                        colored_sheets.append(sheet.Name.rstrip())
+                    try:
+                        if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                            colored_sheets.append(sheet.Name.rstrip())
+                    except Exception:
+                        continue
                 
                 self.excel_service.close_workbook(wb_new)
                 
@@ -641,52 +752,46 @@ class Comparator:
                     try:
                         img_new = Image.open(new_img_path)
                         img_old = Image.open(old_img_path)
+                        side = None
+                        has_diff = False
                         
-                        # Resize nếu kích thước khác nhau
-                        if img_new.size != img_old.size:
-                            img_old = img_old.resize(img_new.size, Image.Resampling.LANCZOS)
+                        # === FIX 2: Short-circuit for identical images ===
+                        if OPENCV_AVAILABLE and quick_compare_hash:
+                            if quick_compare_hash(img_new, img_old):
+                                self.report_service.add_result(file_name, sheet_name, "OK", "Không có sai khác")
+                                continue
                         
-                        diff = ImageChops.difference(img_new.convert('RGB'), img_old.convert('RGB'))
-                        diff_gray = diff.convert('L')
+                        # === SỬ DỤNG OPENCV HOẶC PIL ===
+                        if OPENCV_AVAILABLE and compare_images_opencv:
+                            left_img, right_img, has_diff, diff_count = compare_images_opencv(
+                                img_new, img_old,
+                                diff_threshold=threshold,
+                                dilate_size=dilate_size,
+                                dilate_iterations=dilate_iterations,
+                                highlight_color=fill_color,
+                                fill_opacity=fill_opacity
+                            )
+                            side = create_side_by_side(left_img, right_img) if has_diff else None
+                        else:
+                            # Fallback: PIL-based comparison
+                            left_img, right_img, has_diff, diff_count = compare_images_pil(
+                                img_new, img_old,
+                                diff_threshold=threshold,
+                                dilate_size=dilate_size,
+                                dilate_iterations=dilate_iterations,
+                                highlight_color=fill_color,
+                                fill_opacity=fill_opacity
+                            )
+                            side = create_side_by_side(left_img, right_img) if has_diff else None
                         
-                        # Tạo mask
-                        mask = diff_gray.point(lambda x: 255 if x > threshold else 0)
-                        
-                        # Dilate
-                        eff_dilate = dilate_size if dilate_size % 2 == 1 else max(1, dilate_size - 1)
-                        for _ in range(dilate_iterations):
-                            mask = mask.filter(ImageFilter.MaxFilter(eff_dilate))
-                        
-                        if mask.getbbox():
-                            # Có sự khác biệt
-                            hex_color = fill_color.lstrip('#')
-                            r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-                            alpha = int(255 * fill_opacity / 100)
-                            
-                            overlay = Image.new('RGBA', img_new.size, (r, g, b, alpha))
-                            overlay_masked = Image.new('RGBA', img_new.size, (0, 0, 0, 0))
-                            overlay_masked.paste(overlay, (0, 0), mask.convert('L'))
-                            
-                            combined = Image.alpha_composite(img_new.convert('RGBA'), overlay_masked)
-                            
-                            # Tạo ảnh side-by-side
-                            left = img_old.convert('RGB')
-                            right = combined.convert('RGB')
-                            
-                            side = Image.new('RGB', (left.width + right.width, max(left.height, right.height)), (255, 255, 255))
-                            side.paste(left, (0, 0))
-                            side.paste(right, (left.width, 0))
-                            
-                            # Lưu kết quả
+                        if has_diff and side is not None:
                             safe_name = sheet_name.replace('|', '_').replace(' ', '_').replace('/', '_')
                             result_path = os.path.join(output_folder, f"{file_name}_{safe_name}_so_sanh.png")
                             side.save(result_path, "PNG")
-                            
                             comparison_results.append(result_path)
-                            file_comparison_images[sheet_name] = result_path  # For per-file Excel result
+                            file_comparison_images[sheet_name] = result_path
                             self.report_service.add_result(file_name, sheet_name, "FAIL", "Có sai khác", result_path)
                         else:
-                            # Không có sự khác biệt
                             self.report_service.add_result(file_name, sheet_name, "OK", "Không có sai khác")
                         
                     except Exception as e:
@@ -756,12 +861,22 @@ class Comparator:
             pythoncom.CoInitialize()
             
             # Tạo Excel instance
-            excel = win32com.client.Dispatch("Excel.Application")
-            excel.DisplayAlerts = False
-            excel.EnableEvents = False
-            
-            # Mở file source (ẩn)
-            excel.Visible = False
+            try:
+                excel = win32com.client.Dispatch("Excel.Application")
+            except Exception:
+                excel = win32com.client.DispatchEx("Excel.Application")
+            try:
+                excel.DisplayAlerts = False
+            except Exception:
+                pass
+            try:
+                excel.EnableEvents = False
+            except Exception:
+                pass
+            try:
+                excel.Visible = False
+            except Exception:
+                pass
             file_path = os.path.abspath(file_path)
             utils.unblock_file(file_path)
             
@@ -783,7 +898,7 @@ class Comparator:
                 temp_workbook.Sheets(temp_workbook.Sheets.Count).Delete()
             
             # Xử lý từng sheet
-            zoom_level = self.settings.get('zoom', 46) if self.settings else 46
+            zoom_level = self.settings.get('zoom', config.DEFAULT_ZOOM) if self.settings else config.DEFAULT_ZOOM
             
             for idx, sheet_name in enumerate(sheet_names):
                 try:
@@ -866,8 +981,14 @@ class Comparator:
                         pass
                     
                     # Bây giờ mới show Excel và bring to foreground
-                    excel.Visible = True
-                    excel.ScreenUpdating = True
+                    try:
+                        excel.Visible = True
+                    except Exception:
+                        pass
+                    try:
+                        excel.ScreenUpdating = True
+                    except Exception:
+                        pass
                     
                     try:
                         excel.WindowState = -4137  # xlMaximized
@@ -904,7 +1025,10 @@ class Comparator:
                         utils.logger.warning(f"Failed to capture screenshot for {sheet_name}")
                     
                     # Ẩn Excel lại sau mỗi sheet để giảm nhấp nháy
-                    excel.Visible = False
+                    try:
+                        excel.Visible = False
+                    except Exception:
+                        pass
                     
                 except Exception as e:
                     utils.logger.error(f"Error processing sheet {sheet_name}: {e}")

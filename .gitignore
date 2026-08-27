@@ -153,6 +153,7 @@ cython_debug/
 # Local configuration
 user_settings.json
 app_debug.log
+release_artifacts/
 test_result.txt
 test_result_py.txt
 *.log

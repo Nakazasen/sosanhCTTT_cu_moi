@@ -289,3 +289,4 @@ class ModernHelpWindow(tk.Toplevel):
             "ja": "新しい方法で特定のファイル形式が正しく処理されない場合は、下部の黄色いボタンを使用してください。"
         }
         self.add_paragraph(content, desc.get(self.current_lang, desc['en']))
+        self.add_image(content, "legacy.png")

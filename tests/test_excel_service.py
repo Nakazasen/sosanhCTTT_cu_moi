@@ -103,9 +103,34 @@ class TestExcelService(unittest.TestCase):
         self.assertEqual(sheet_green.Name, "Green-Sheet")
         
         # Other Sheet should NOT be renamed (Name assignment not called)
-        # Note: In mock, assigning property updates it. 
-        # If the code skipped it, it remains "Other_Sheet".
-        self.assertEqual(sheet_other.Name, "Other_Sheet") 
+        self.assertEqual(sheet_other.Name, "Other_Sheet")
+
+    @patch('services.excel_service.utils')
+    def test_standard_preprocess_old_file_auto_b(self, mock_utils):
+        """Test logic tiền xử lý file cũ và đồng bộ auto_add_b"""
+        mock_wb = MagicMock()
+        self.service.open_workbook = MagicMock(return_value=mock_wb)
+        self.service.close_workbook = MagicMock()
+        
+        sheet_old1 = MagicMock()
+        sheet_old1.Name = "01-CTTT"
+        sheet_old1.Tab.Color = 0 # Not green
+        
+        sheet_old2 = MagicMock()
+        sheet_old2.Name = "OtherSheet"
+        sheet_old2.Tab.Color = 0
+        
+        mock_wb.Sheets = [sheet_old1, sheet_old2]
+        
+        # Reference new sheets where 01-CTTT has 'b' -> "b01-CTTT"
+        ref_new_sheets = [("01-CTTT", "b01-CTTT")]
+        
+        self.service.standard_preprocess("dummy_old.xlsx", is_new=False, auto_add_b=True, new_sheet_names_ref=ref_new_sheets)
+        
+        # sheet_old1 should be renamed to "b01-CTTT"
+        self.assertEqual(sheet_old1.Name, "b01-CTTT")
+        # sheet_old2 should remain "OtherSheet"
+        self.assertEqual(sheet_old2.Name, "OtherSheet")
 
 if __name__ == '__main__':
     unittest.main()

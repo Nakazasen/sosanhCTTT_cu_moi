@@ -67,8 +67,8 @@ class CleanupService:
     @staticmethod
     def cleanup_per_sheet_pdfs(base_path):
         """
-        Xóa các file PDF từng sheet còn sót lại sau khi đã gộp.
-        Không xóa: *_ALL_SHEETS.pdf, comparison_*.pdf
+        Xóa tất cả các file PDF so sánh tạm và từng sheet còn sót lại.
+        Chỉ giữ lại file PDF gốc của CTTT mới ({filename}.pdf).
         
         Args:
             base_path: Đường dẫn thư mục output
@@ -83,41 +83,23 @@ class CleanupService:
                 "__tmp_CTTTmoi_*.pdf",
                 "__tmp_CTTTcu_*.pdf",
                 "temp_sheet_*.pdf",
-                "Batch_Combined.pdf",  # Legacy batch workflow file
+                "Batch_Combined.pdf",
+                "comparison_*.pdf",
+                "So_sanh_*.pdf",
             ]
-            
-            keep_suffixes = ["_ALL_SHEETS.pdf"]
-            keep_prefixes = ["comparison_"]
             
             removed = 0
             
             for pattern in patterns:
                 for filepath in glob.glob(os.path.join(base_path, pattern)):
-                    filename = os.path.basename(filepath)
-                    
-                    # Kiểm tra có nên giữ lại không
-                    should_keep = False
-                    for suffix in keep_suffixes:
-                        if filename.endswith(suffix):
-                            should_keep = True
-                            break
-                    for prefix in keep_prefixes:
-                        if filename.startswith(prefix):
-                            should_keep = True
-                            break
-                    
-                    if should_keep:
-                        continue
-                    
                     try:
                         os.remove(filepath)
                         removed += 1
                     except Exception:
-                        # File có thể đang bị lock bởi PDF viewer
                         pass
             
             if removed:
-                utils.logger.info(f"Cleanup: Đã xóa {removed} file PDF tạm")
+                utils.logger.info(f"Cleanup: Đã xóa {removed} file PDF so sánh tạm")
                 
         except Exception as e:
             utils.logger.debug(f"Cleanup per-sheet PDFs error: {e}")
