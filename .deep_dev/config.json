@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "allowlisted_test_commands": {
+    "unit_tests": {
+      "executable": "python",
+      "args": ["run_tests.py"],
+      "cwd": ".",
+      "timeout_seconds": 120
+    }
+  }
+}
