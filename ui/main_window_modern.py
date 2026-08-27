@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, colorchooser
 from core.comparator import Comparator
 import config
+import utils
 from services.settings_service import SettingsService
 from ui.modern_style import Colors, Fonts, Spacing, configure_styles
 from ui.translations import get_text, LANGUAGES, get_available_languages
@@ -77,6 +78,7 @@ class MainWindow:
         
         # UI Setup
         self.create_widgets()
+        self._refresh_workflow_state()
         
         # Logic
         self.comparator = Comparator()
@@ -93,6 +95,9 @@ class MainWindow:
         self.old_dir_path = tk.StringVar()
         self.old_files_display = tk.StringVar()
         self.result_path = tk.StringVar()
+        self.is_processing = False
+        self.pairs_confirmed = False
+        self.workflow_validation_error = None
         
         # Settings Variables
         self.zoom_var = tk.IntVar(value=self.settings.get("zoom_level", config.DEFAULT_ZOOM))
@@ -102,8 +107,11 @@ class MainWindow:
         self.save_user_settings = tk.BooleanVar(value=self.settings.get("save_settings", True))
         self.use_pdf_method = tk.BooleanVar(value=self.settings.get("use_pdf_method", True))
         self.pdf_render_dpi = tk.IntVar(value=self.settings.get("pdf_dpi", config.DEFAULT_DPI))
-        self.doc_mode_var = tk.StringVar(value=self.settings.get("doc_mode", config.DOC_MODE_STANDARD_CTTT))
-        self.print_area_var = tk.StringVar(value=self.settings.get("print_area", config.PRINT_AREA_STANDARD_CTTT))
+        # Document mode is deliberately not restored as an active choice.  It is the
+        # first workflow decision and must be made for each new comparison session.
+        self.doc_mode_var = tk.StringVar(value="")
+        self.print_area_var = tk.StringVar(value="")
+        self.doc_mode_selected = False
         
         # Highlight Colors
         self.highlight_base_color = self.settings.get("highlight_base_color", config.HIGHLIGHT_BASE_COLOR)
@@ -260,13 +268,7 @@ class MainWindow:
             state="readonly", 
             width=56
         )
-        initial_mode = self.doc_mode_var.get()
-        if initial_mode == config.DOC_MODE_DUKC_CTTT:
-            self.doc_mode_combo.current(1)
-        elif initial_mode == config.DOC_MODE_DUKC_OTHER:
-            self.doc_mode_combo.current(2)
-        else:
-            self.doc_mode_combo.current(0)
+        self.doc_mode_combo.set("")
             
         self.doc_mode_combo.pack(side="left", padx=(0, Spacing.LG))
         self.doc_mode_combo.bind("<<ComboboxSelected>>", self.on_doc_mode_change)
@@ -310,6 +312,20 @@ class MainWindow:
         # Check Order
         self.btn_check_order = ttk.Button(self.file_card, text="🔍 Kiểm tra thứ tự cặp CTTT", command=self.check_order, style="Secondary.TButton")
         self.btn_check_order.grid(row=5, column=0, columnspan=5, sticky="ew", pady=(Spacing.MD, 0))
+
+        self.workflow_frame = tk.Frame(self.file_card, bg="#F8FAFC", highlightbackground="#E2E8F0", highlightthickness=1)
+        self.workflow_frame.grid(row=6, column=0, columnspan=5, sticky="ew", padx=Spacing.SM, pady=(Spacing.SM, 0))
+        self.workflow_frame.grid_columnconfigure(0, weight=1)
+        self.workflow_step_labels = []
+        for step_index in range(5):
+            label = tk.Label(
+                self.workflow_frame, anchor="w", font=Fonts.get("sm", "bold"), padx=10, pady=4
+            )
+            label.grid(row=step_index, column=0, sticky="ew", padx=4, pady=2)
+            self.workflow_step_labels.append(label)
+
+        self.lbl_workflow = ttk.Label(self.file_card, text="", style="Muted.TLabel", wraplength=900)
+        self.lbl_workflow.grid(row=7, column=0, columnspan=5, sticky="w", padx=Spacing.SM, pady=(Spacing.XS, 0))
         
         # ==================== RUN BUTTON ====================
         run_frame = ttk.Frame(content); run_frame.grid(row=row, column=0, sticky="ew", pady=(0, Spacing.MD)); row += 1
@@ -364,7 +380,7 @@ class MainWindow:
         self.lbl_zoom = ttk.Label(self.settings_card, text="Mức phóng to:")
         self.lbl_zoom.grid(row=1, column=0, sticky="w", pady=Spacing.SM)
         ttk.Entry(self.settings_card, textvariable=self.zoom_var, width=10).grid(row=1, column=1, sticky="w", padx=Spacing.SM)
-        self.lbl_goto = ttk.Label(self.settings_card, text="Di chuyển đến ô:")
+        self.lbl_goto = ttk.Label(self.settings_card, text="Di chuyển đến ô (Mặc định: EX1):")
         self.lbl_goto.grid(row=1, column=2, sticky="e", padx=Spacing.SM)
         ttk.Entry(self.settings_card, textvariable=self.goto_address, width=10).grid(row=1, column=3, sticky="w")
         
@@ -427,6 +443,13 @@ class MainWindow:
 
     def on_doc_mode_change(self, event=None):
         idx = self.doc_mode_combo.current()
+        if idx < 0:
+            self.doc_mode_selected = False
+            self.doc_mode_var.set("")
+            self.print_area_var.set("")
+            self._invalidate_pair_confirmation()
+            return
+        self.doc_mode_selected = True
         if idx == 1:
             self.doc_mode_var.set(config.DOC_MODE_DUKC_CTTT)
             self.print_area_var.set(config.PRINT_AREA_DUKC_CTTT)
@@ -434,11 +457,114 @@ class MainWindow:
         elif idx == 2:
             self.doc_mode_var.set(config.DOC_MODE_DUKC_OTHER)
             self.print_area_var.set(config.PRINT_AREA_DUKC_OTHER)
-            self.update_status("Chế độ: Tờ phát hành ĐƯKC & Khác (Vùng in: A1:AT120)")
+            self.update_status("Chế độ: Tờ phát hành ĐƯKC & Khác (Vùng in: A1:AT120 - Sheet Form)")
         else:
             self.doc_mode_var.set(config.DOC_MODE_STANDARD_CTTT)
             self.print_area_var.set(config.PRINT_AREA_STANDARD_CTTT)
             self.update_status("Chế độ: CTTT thông thường có form từ EX...xanh (Vùng in: EX1:GR76)")
+        self._invalidate_pair_confirmation()
+
+    def _invalidate_pair_confirmation(self):
+        """Require confirmation again whenever inputs or document type change."""
+        self.pairs_confirmed = False
+        self.workflow_validation_error = None
+        self._refresh_workflow_state()
+
+    def _refresh_workflow_state(self):
+        """Gate each action until the previous workflow step is complete."""
+        if not hasattr(self, "btn_select_old"):
+            return
+
+        has_doc_mode = bool(getattr(self, "doc_mode_selected", False))
+        has_new = bool(self.new_files)
+        has_old = bool(self.old_files)
+        counts_match = has_new and has_old and len(self.new_files) == len(self.old_files)
+        ready = has_doc_mode and counts_match and self.pairs_confirmed and not self.is_processing
+
+        self.btn_select_new.config(state="normal" if has_doc_mode and not self.is_processing else "disabled")
+        self.btn_select_old.config(state="normal" if has_doc_mode and has_new and not self.is_processing else "disabled")
+        self.btn_check_order.config(state="normal" if counts_match and not self.is_processing else "disabled")
+        self.btn_run.config(state="normal" if ready else "disabled")
+        self.btn_legacy.config(state="normal" if ready else "disabled")
+
+        validation_error = getattr(self, "workflow_validation_error", None)
+        if not has_doc_mode:
+            message = "Bước 1/5: Chọn loại tài liệu so sánh để mở khóa bước chọn file."
+            step_states = [("current", "Bước 1 — Chọn loại tài liệu so sánh"), ("blocked", "Bước 2 — Chọn CTTT mới"), ("blocked", "Bước 3 — Chọn CTTT cũ"), ("blocked", "Bước 4 — Kiểm tra & xác nhận cặp"), ("blocked", "Bước 5 — Bắt đầu so sánh")]
+        elif not has_new:
+            message = "Bước 2/5: Đã chọn loại tài liệu. Hãy chọn file CTTT mới."
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("current", "Bước 2 — Chọn CTTT mới"), ("blocked", "Bước 3 — Chọn CTTT cũ"), ("blocked", "Bước 4 — Kiểm tra & xác nhận cặp"), ("blocked", "Bước 5 — Bắt đầu so sánh")]
+        elif not has_old:
+            message = "Bước 3/5: Đã chọn file mới. Hãy chọn file CTTT cũ tương ứng."
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("done", "Bước 2 — Đã chọn CTTT mới"), ("current", "Bước 3 — Chọn CTTT cũ"), ("blocked", "Bước 4 — Kiểm tra & xác nhận cặp"), ("blocked", "Bước 5 — Bắt đầu so sánh")]
+        elif not counts_match:
+            message = (
+                f"Bước 3/5 chưa hợp lệ: số file mới ({len(self.new_files)}) và "
+                f"file cũ ({len(self.old_files)}) chưa bằng nhau."
+            )
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("done", "Bước 2 — Đã chọn CTTT mới"), ("error", "Bước 3 — Số lượng file mới/cũ chưa khớp"), ("blocked", "Bước 4 — Kiểm tra & xác nhận cặp"), ("blocked", "Bước 5 — Bắt đầu so sánh")]
+        elif validation_error:
+            message = "Bước 4/5 chưa hợp lệ: loại tài liệu đã chọn không khớp với form trong file."
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("done", "Bước 2 — Đã chọn CTTT mới"), ("done", "Bước 3 — Đã chọn CTTT cũ"), ("error", "Bước 4 — Chọn đúng loại tài liệu hoặc thay file"), ("blocked", "Bước 5 — Bắt đầu so sánh")]
+        elif not self.pairs_confirmed:
+            message = "Bước 4/5: Kiểm tra thứ tự từng cặp rồi bấm 'Xác nhận & Lưu'."
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("done", "Bước 2 — Đã chọn CTTT mới"), ("done", "Bước 3 — Đã chọn CTTT cũ"), ("current", "Bước 4 — Kiểm tra & xác nhận cặp"), ("blocked", "Bước 5 — Bắt đầu so sánh")]
+        elif self.is_processing:
+            message = "Bước 5/5: Đang chạy so sánh, vui lòng chờ hoàn tất."
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("done", "Bước 2 — Đã chọn CTTT mới"), ("done", "Bước 3 — Đã chọn CTTT cũ"), ("done", "Bước 4 — Đã xác nhận cặp"), ("current", "Bước 5 — Đang chạy so sánh")]
+        else:
+            message = "✅ Đã hoàn tất 4 bước. Bạn có thể bắt đầu so sánh."
+            step_states = [("done", "Bước 1 — Đã chọn loại tài liệu"), ("done", "Bước 2 — Đã chọn CTTT mới"), ("done", "Bước 3 — Đã chọn CTTT cũ"), ("done", "Bước 4 — Đã xác nhận cặp"), ("done", "Bước 5 — Sẵn sàng bắt đầu so sánh")]
+
+        self.lbl_workflow.config(text=message)
+        palette = {
+            "done": ("●", "#166534", "#DCFCE7"),
+            "current": ("●", "#C2410C", "#FFEDD5"),
+            "error": ("●", "#B91C1C", "#FEE2E2"),
+            "blocked": ("○", "#6B7280", "#F3F4F6"),
+        }
+        for label, (state, text) in zip(getattr(self, "workflow_step_labels", []), step_states):
+            icon, foreground, background = palette[state]
+            label.config(text=f"{icon}  {text}", fg=foreground, bg=background)
+
+    def _show_workflow_error(self):
+        if not getattr(self, "doc_mode_selected", False):
+            message = "Bước 1 chưa hoàn tất: vui lòng chọn loại tài liệu so sánh."
+        elif not self.new_files:
+            message = "Bước 2 chưa hoàn tất: vui lòng chọn file CTTT mới."
+        elif not self.old_files:
+            message = "Bước 3 chưa hoàn tất: vui lòng chọn file CTTT cũ."
+        elif len(self.new_files) != len(self.old_files):
+            message = "Số lượng file mới và cũ chưa khớp. Hãy bổ sung hoặc xóa file trước."
+        elif not self.pairs_confirmed:
+            message = "Bạn chưa kiểm tra và xác nhận thứ tự các cặp CTTT."
+        else:
+            return False
+        messagebox.showwarning("Chưa thể tiếp tục", message, parent=self.master)
+        return True
+
+    def _validate_document_mode_selection(self):
+        """Block an incompatible document mode before a background thread is started."""
+        from services.validation_service import ValidationService
+
+        is_valid, error_message = ValidationService.validate_document_mode(
+            self.new_files,
+            self.old_files,
+            self.doc_mode_var.get(),
+        )
+        if is_valid:
+            self.workflow_validation_error = None
+            self._refresh_workflow_state()
+            return True
+
+        self.workflow_validation_error = error_message
+        self._refresh_workflow_state()
+        messagebox.showerror(
+            "Loại tài liệu không phù hợp",
+            error_message,
+            parent=self.master,
+        )
+        return False
             
     def on_screen_mode_change(self, event=None):
         mode_idx = self.screen_combo.current()
@@ -535,6 +661,7 @@ class MainWindow:
             file_names = ', '.join([os.path.basename(f) for f in self.new_files])
             self.new_files_display.set(file_names)
             self._auto_save_settings()
+            self._invalidate_pair_confirmation()
 
     def select_old_files(self, append_only=False):
         initial_dir = self.old_dir_path.get().strip()
@@ -621,6 +748,7 @@ class MainWindow:
             file_names = ', '.join([os.path.basename(f) for f in self.old_files])
             self.old_files_display.set(file_names)
             self._auto_save_settings()
+            self._invalidate_pair_confirmation()
 
     def browse_result_folder(self):
         title_texts = {"vi": "Chọn thư mục lưu kết quả", "en": "Select result folder", "zh": "选择结果文件夹", "ja": "結果フォルダを選択"}
@@ -632,6 +760,9 @@ class MainWindow:
         ModernHelpWindow(self.master, self.current_lang)
 
     def check_order(self):
+        if not self.new_files or not self.old_files or len(self.new_files) != len(self.old_files):
+            self._show_workflow_error()
+            return
         self.show_confirmation_dialog()
 
     def show_confirmation_dialog(self):
@@ -731,6 +862,7 @@ class MainWindow:
             
             if idx is not None and 0 <= idx < len(self.new_files):
                 self.new_files.pop(idx)
+                self._invalidate_pair_confirmation()
                 _refresh_dialog_lists()
                 if len(self.new_files) > 0:
                     new_idx = min(idx, len(self.new_files) - 1)
@@ -772,6 +904,7 @@ class MainWindow:
                     
             if idx is not None and 0 <= idx < len(self.old_files):
                 self.old_files.pop(idx)
+                self._invalidate_pair_confirmation()
                 _refresh_dialog_lists()
                 if len(self.old_files) > 0:
                     new_idx = min(idx, len(self.old_files) - 1)
@@ -903,6 +1036,7 @@ class MainWindow:
             self.new_files_display.set(file_names_new)
             self.old_files_display.set(file_names_old)
             self._auto_save_settings()
+            self._invalidate_pair_confirmation()
         self.drag_data["item"] = None
         self.drag_data["index"] = None
         self.drag_data["widget"] = None
@@ -939,16 +1073,43 @@ class MainWindow:
         self.new_files_display.set(file_names_new)
         self.old_files_display.set(file_names_old)
         self._auto_save_settings()
+        self._invalidate_pair_confirmation()
 
     def confirm_files(self):
         """Xác nhận và áp dụng thứ tự file đã sắp xếp, đóng cửa sổ xác nhận"""
         lang = self.current_lang
+        if not self._validate_document_mode_selection():
+            return False
+        self.pairs_confirmed = True
+        self._refresh_workflow_state()
+
+        # Sync doc_mode_var and print_area_var from combo
+        if hasattr(self, 'doc_mode_combo'):
+            idx = self.doc_mode_combo.current()
+            if idx == 1:
+                self.doc_mode_var.set(config.DOC_MODE_DUKC_CTTT)
+                self.print_area_var.set(config.PRINT_AREA_DUKC_CTTT)
+            elif idx == 2:
+                self.doc_mode_var.set(config.DOC_MODE_DUKC_OTHER)
+                self.print_area_var.set(config.PRINT_AREA_DUKC_OTHER)
+            else:
+                self.doc_mode_var.set(config.DOC_MODE_STANDARD_CTTT)
+                self.print_area_var.set(config.PRINT_AREA_STANDARD_CTTT)
+
         # Cập nhật hiển thị tên file trong các entry chính
         file_names_new = ', '.join([os.path.basename(f) for f in self.new_files])
         file_names_old = ', '.join([os.path.basename(f) for f in self.old_files])
         self.new_files_display.set(file_names_new)
         self.old_files_display.set(file_names_old)
         self._auto_save_settings()
+
+        # Close the ordering dialog immediately after a successful save. Keeping
+        # it alive until after showinfo makes the UI appear as if confirm did not work.
+        if hasattr(self, 'confirmation_window') and self.confirmation_window:
+            try:
+                self.confirmation_window.destroy()
+            finally:
+                self.confirmation_window = None
 
         confirm_titles = {"vi": "Xác nhận", "en": "Confirmed", "zh": "已确认", "ja": "確認済み"}
         confirm_msgs = {
@@ -958,14 +1119,22 @@ class MainWindow:
             "ja": f"{len(self.new_files)} 件のCTTTペアを確認しました。"
         }
         messagebox.showinfo(confirm_titles.get(lang, confirm_titles["vi"]), confirm_msgs.get(lang, confirm_msgs["vi"]), parent=self.master)
-        if hasattr(self, 'confirmation_window') and self.confirmation_window:
-            try:
-                self.confirmation_window.destroy()
-            except Exception:
-                pass
+        return True
 
     # ========== RUN COMPARISON ==========
     def run_comparison(self):
+        if self.is_processing:
+            utils.logger.warning("Comparison is already in progress, ignoring duplicate trigger.")
+            return
+
+        # This guard also covers F5/Ctrl+Enter and the menu command, which do not
+        # respect a disabled button state.
+        if self._show_workflow_error():
+            return
+
+        if not self._validate_document_mode_selection():
+            return
+
         lang = self.current_lang
         
         # Warning/Error messages translations
@@ -1014,7 +1183,10 @@ class MainWindow:
                 "print_area": self.print_area_var.get(),
             })
         
+        self.is_processing = True
         self.btn_run.config(state="disabled")
+        if hasattr(self, 'btn_legacy'):
+            self.btn_legacy.config(state="disabled")
         self.update_status(processing_texts.get(lang, processing_texts["vi"]))
         
         thread = threading.Thread(target=self._run_thread, daemon=True)
@@ -1073,7 +1245,10 @@ class MainWindow:
             self.update_status(f"❌ {get_text('status_error', self.current_lang)} {e}")
             messagebox.showerror(get_text("error", self.current_lang), str(e))
         finally:
+            self.is_processing = False
             self.btn_run.config(state="normal")
+            if hasattr(self, 'btn_legacy'):
+                self.btn_legacy.config(state="normal")
 
     def update_status(self, msg):
         if len(msg) > 100:
@@ -1084,6 +1259,16 @@ class MainWindow:
     # ========== LEGACY SCREENSHOT METHOD ==========
     def run_legacy_comparison(self):
         """Chạy phương pháp Legacy Screenshot (giống phiên bản cũ)"""
+        if self.is_processing:
+            utils.logger.warning("Comparison is already in progress, ignoring duplicate legacy trigger.")
+            return
+
+        if self._show_workflow_error():
+            return
+
+        if not self._validate_document_mode_selection():
+            return
+
         lang = self.current_lang
         
         # Translations
@@ -1144,10 +1329,12 @@ class MainWindow:
             settings = {
                 "screen_mode": screen_mode,
                 "zoom": self.zoom_var.get(),
-                "goto_address": self.goto_address.get(),
+                "goto_address": "EX1" if not self.goto_address.get().strip() or self.goto_address.get().strip().upper() in ["A1", ""] else self.goto_address.get().strip(),
                 "output_folder": self.result_path.get().strip() or None,
                 "highlight_fill_color": self.highlight_fill_color,
                 "highlight_fill_opacity": self.highlight_fill_opacity.get(),
+                "doc_mode": self.doc_mode_var.get(),
+                "print_area": self.print_area_var.get(),
             }
             
             # Run legacy comparison
@@ -1432,7 +1619,12 @@ class MainWindow:
         if hasattr(self, 'lbl_zoom'):
             self.lbl_zoom.config(text=zoom_texts.get(lang, zoom_texts["vi"]))
         
-        goto_texts = {"vi": "Di chuyển đến ô:", "en": "Go to cell:", "zh": "跳转到单元格:", "ja": "セルへ移動:"}
+        goto_texts = {
+            "vi": "Di chuyển đến ô (Mặc định: EX1):",
+            "en": "Go to cell (Default: EX1):",
+            "zh": "跳转到单元格 (默认: EX1):",
+            "ja": "セルへ移動 (デフォルト: EX1):"
+        }
         if hasattr(self, 'lbl_goto'):
             self.lbl_goto.config(text=goto_texts.get(lang, goto_texts["vi"]))
         

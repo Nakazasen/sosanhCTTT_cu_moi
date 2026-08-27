@@ -6,7 +6,7 @@ Installer files are published to:
 
 `\\fstvn01\Data\10_Production Engineering Department(製造技術部)\02.製造技術課\PE Dept\15. FORM（BIEU MAU）-形式\Form_VBA\Form_Phanmem_sosanhCTTT`
 
-The update catalog and matching installer are published to:
+The automatic-update catalog and matching `.mpupdate` package are published to:
 
 `\\fstvn01\Data\10_Production Engineering Department(製造技術部)\02.製造技術課\PE Dept\15. FORM（BIEU MAU）-形式\Form_VBA\Form_Phanmem_sosanhCTTT\release_update`
 
@@ -59,7 +59,8 @@ the risk of missing slow but valid update shares.
 4. Run `py package_app.py --publish` to copy the verified installer to the
    release folder.
 5. Run `py package_app.py --publish-update --release-notes "Description"` to
-   copy the installer to `release_update` and atomically publish `latest.json`.
+   create and copy `SosanhCTTT-<version>.mpupdate` to `release_update`, then
+   atomically publish `latest.json` last. Never rename a raw `.exe` to `.mpupdate`.
 
 The publish sequence copies to a `.part` file, checks SHA-256, then uses
 `os.replace`. `latest.json` is written only after the installer is complete, so
@@ -71,7 +72,7 @@ clients never receive a catalog for a partial file.
 {
   "schema": 1,
   "version": "7.5.0",
-  "installer": "SosanhCTTT_Setup_7.5.0.exe",
+  "package": "SosanhCTTT-7.5.0.mpupdate",
   "sha256": "64 lowercase hexadecimal characters",
   "size": 12345678,
   "notes": "Brief release note"

@@ -274,8 +274,292 @@ class PDFService:
                     except Exception:
                         pass
         return visible_sheets
+
+    def get_visible_sheets_fast(self, file_path):
+        """Read visible sheet names from XLSX/XLSM metadata without opening Excel."""
+        try:
+            from services.validation_service import ValidationService
+
+            metadata = ValidationService._inspect_workbook(file_path)
+            if metadata is None:
+                return None
+            visible = [
+                item["name"].rstrip()
+                for item in metadata
+                if item["visible"] and item.get("has_content", True)
+            ]
+            utils.logger.info(
+                f"Found {len(visible)} visible sheets from workbook metadata: {visible}"
+            )
+            return visible
+        except Exception as error:
+            utils.logger.warning(f"Fast visible-sheet discovery failed for {file_path}: {error}")
+            return None
     
-    def export_sheets_to_pdf(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76", _keep_alive=False):
+    def find_sheet_by_name(self, file_path, target_name="form"):
+        """
+        Tìm chính xác tên của Sheet theo tên target (không phân biệt hoa thường và khoảng trắng).
+        Trả về tên gốc của Sheet trong Excel nếu tìm thấy, ngược lại trả về None.
+        """
+        found_name = None
+        for attempt in range(2):
+            workbook = None
+            try:
+                self._init_excel()
+                utils.unblock_file(file_path)
+                workbook = self.excel_app.Workbooks.Open(
+                    file_path,
+                    ReadOnly=True,
+                    UpdateLinks=False,
+                    Notify=False,
+                    AddToMru=False
+                )
+                target_clean = target_name.strip().lower()
+                for sheet in workbook.Sheets:
+                    try:
+                        s_name = sheet.Name.rstrip()
+                        if s_name.strip().lower() == target_clean:
+                            found_name = s_name
+                            break
+                    except Exception:
+                        continue
+                if found_name:
+                    break
+            except Exception as e:
+                utils.logger.error(f"Error finding sheet '{target_name}' in {file_path}: {e}")
+                self._cleanup_excel()
+                if attempt == 0:
+                    time.sleep(1)
+            finally:
+                if workbook:
+                    try:
+                        workbook.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+        return found_name
+
+    @staticmethod
+    def _find_sheet(workbook, sheet_name):
+        """Find a worksheet while tolerating trailing spaces and case differences."""
+        target = sheet_name.strip().lower()
+        for sheet in workbook.Sheets:
+            if sheet.Name.strip().lower() == target:
+                return sheet
+        return None
+
+    @staticmethod
+    def _sync_sheet_layout(target_sheet, reference_sheet, print_area):
+        """Normalize row/column geometry in memory before a visual comparison.
+
+        Excel stores widths and heights as fractional values. Tiny differences between
+        workbook revisions reflow every text line in the exported PDF and otherwise
+        create thousands of false-positive pixels.
+        """
+        reference_range = reference_sheet.Range(print_area)
+        target_range = target_sheet.Range(print_area)
+
+        for index in range(1, reference_range.Columns.Count + 1):
+            source = reference_range.Columns(index).EntireColumn
+            destination = target_range.Columns(index).EntireColumn
+            destination.ColumnWidth = source.ColumnWidth
+            destination.Hidden = source.Hidden
+
+        for index in range(1, reference_range.Rows.Count + 1):
+            source = reference_range.Rows(index).EntireRow
+            destination = target_range.Rows(index).EntireRow
+            destination.RowHeight = source.RowHeight
+            destination.Hidden = source.Hidden
+
+    @staticmethod
+    def _read_sheet_layout(file_path, sheet_name, print_area):
+        """Read effective row/column geometry without starting or querying Excel COM."""
+        import warnings
+        from openpyxl import load_workbook
+        from openpyxl.utils import get_column_letter, range_boundaries
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Data Validation extension is not supported",
+                category=UserWarning,
+            )
+            workbook = load_workbook(
+                file_path,
+                read_only=False,
+                data_only=False,
+                keep_links=False,
+            )
+        try:
+            target = sheet_name.strip().lower()
+            worksheet = next(
+                (sheet for sheet in workbook.worksheets if sheet.title.strip().lower() == target),
+                None,
+            )
+            if worksheet is None:
+                return None
+
+            min_col, min_row, max_col, max_row = range_boundaries(print_area)
+            default_width = worksheet.sheet_format.defaultColWidth
+            if default_width is None:
+                default_width = worksheet.sheet_format.baseColWidth or 8.43
+            # Excel ignores defaultRowHeight unless customHeight is explicitly set.
+            default_height = (
+                worksheet.sheet_format.defaultRowHeight
+                if worksheet.sheet_format.customHeight
+                else 15.0
+            )
+
+            column_dimensions = list(worksheet.column_dimensions.values())
+
+            columns = []
+            for column_index in range(min_col, max_col + 1):
+                dimension = next(
+                    (
+                        item for item in column_dimensions
+                        if item.min <= column_index <= item.max
+                    ),
+                    None,
+                )
+                columns.append({
+                    "index": column_index,
+                    "size": dimension.width if dimension and dimension.width is not None else default_width,
+                    "hidden": bool(dimension.hidden) if dimension else False,
+                })
+
+            rows = []
+            for row_index in range(min_row, max_row + 1):
+                dimension = worksheet.row_dimensions.get(row_index)
+                rows.append({
+                    "index": row_index,
+                    "size": dimension.height if dimension and dimension.height is not None else default_height,
+                    "hidden": bool(dimension.hidden) if dimension else False,
+                })
+
+            return {"columns": columns, "rows": rows}
+        finally:
+            workbook.close()
+
+    @staticmethod
+    def _group_layout_dimensions(dimensions):
+        """Group adjacent dimensions with identical geometry for batched COM writes."""
+        groups = []
+        for dimension in dimensions:
+            key = (round(float(dimension["size"]), 8), bool(dimension["hidden"]))
+            if groups and groups[-1]["end"] + 1 == dimension["index"] and groups[-1]["key"] == key:
+                groups[-1]["end"] = dimension["index"]
+            else:
+                groups.append({
+                    "start": dimension["index"],
+                    "end": dimension["index"],
+                    "key": key,
+                })
+        return groups
+
+    @classmethod
+    def _apply_sheet_layout(cls, target_sheet, layout, current_layout=None,
+                            apply_columns=True, apply_rows=True):
+        """Apply pre-read layout using one COM operation per contiguous size group."""
+        from openpyxl.utils import get_column_letter
+
+        def changed(reference, current, field):
+            if current is None:
+                return reference
+            current_by_index = {item["index"]: item for item in current}
+            result = []
+            for item in reference:
+                old = current_by_index.get(item["index"])
+                if old is None:
+                    result.append(item)
+                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 1e-8:
+                    result.append(item)
+                elif field == "hidden" and bool(item["hidden"]) != bool(old["hidden"]):
+                    result.append(item)
+            return result
+
+        if apply_columns:
+            column_sizes = changed(
+                layout["columns"], current_layout["columns"] if current_layout else None, "size"
+            )
+            for group in cls._group_layout_dimensions(column_sizes):
+                start = get_column_letter(group["start"])
+                end = get_column_letter(group["end"])
+                target = target_sheet.Range(f"{start}:{end}").EntireColumn
+                target.ColumnWidth = group["key"][0]
+
+            column_visibility = changed(
+                layout["columns"], current_layout["columns"] if current_layout else None, "hidden"
+            )
+            for group in cls._group_layout_dimensions(column_visibility):
+                start = get_column_letter(group["start"])
+                end = get_column_letter(group["end"])
+                target_sheet.Range(f"{start}:{end}").EntireColumn.Hidden = group["key"][1]
+
+        if apply_rows:
+            row_sizes = changed(
+                layout["rows"], current_layout["rows"] if current_layout else None, "size"
+            )
+            for group in cls._group_layout_dimensions(row_sizes):
+                target = target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow
+                target.RowHeight = group["key"][0]
+
+            row_visibility = changed(
+                layout["rows"], current_layout["rows"] if current_layout else None, "hidden"
+            )
+            for group in cls._group_layout_dimensions(row_visibility):
+                target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow.Hidden = group["key"][1]
+
+    @classmethod
+    def _sync_changed_layout_from_com(cls, target_sheet, reference_sheet,
+                                      reference_layout, current_layout, print_area):
+        """Sync only changed geometry groups, using Excel's effective display units."""
+        from openpyxl.utils import get_column_letter, range_boundaries
+
+        min_col, min_row, _, _ = range_boundaries(print_area)
+        reference_range = reference_sheet.Range(print_area)
+
+        def changed(reference, current, field):
+            current_by_index = {item["index"]: item for item in current}
+            result = []
+            for item in reference:
+                old = current_by_index.get(item["index"])
+                if old is None:
+                    result.append(item)
+                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 1e-8:
+                    result.append(item)
+                elif field == "hidden" and bool(item["hidden"]) != bool(old["hidden"]):
+                    result.append(item)
+            return result
+
+        changed_columns = changed(reference_layout["columns"], current_layout["columns"], "size")
+        for group in cls._group_layout_dimensions(changed_columns):
+            relative_index = group["start"] - min_col + 1
+            effective_width = reference_range.Columns(relative_index).EntireColumn.ColumnWidth
+            start = get_column_letter(group["start"])
+            end = get_column_letter(group["end"])
+            target_sheet.Range(f"{start}:{end}").EntireColumn.ColumnWidth = effective_width
+
+        hidden_columns = changed(reference_layout["columns"], current_layout["columns"], "hidden")
+        for group in cls._group_layout_dimensions(hidden_columns):
+            relative_index = group["start"] - min_col + 1
+            hidden = reference_range.Columns(relative_index).EntireColumn.Hidden
+            start = get_column_letter(group["start"])
+            end = get_column_letter(group["end"])
+            target_sheet.Range(f"{start}:{end}").EntireColumn.Hidden = hidden
+
+        changed_rows = changed(reference_layout["rows"], current_layout["rows"], "size")
+        for group in cls._group_layout_dimensions(changed_rows):
+            relative_index = group["start"] - min_row + 1
+            effective_height = reference_range.Rows(relative_index).EntireRow.RowHeight
+            target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow.RowHeight = effective_height
+
+        hidden_rows = changed(reference_layout["rows"], current_layout["rows"], "hidden")
+        for group in cls._group_layout_dimensions(hidden_rows):
+            relative_index = group["start"] - min_row + 1
+            hidden = reference_range.Rows(relative_index).EntireRow.Hidden
+            target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow.Hidden = hidden
+
+    def export_sheets_to_pdf(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76",
+                             _keep_alive=False, layout_reference_path=None):
         """
         Export specified sheets from Excel file to a single PDF.
         
@@ -292,6 +576,9 @@ class PDFService:
         exported_page_labels = []
         output_dir = os.path.dirname(output_pdf_path)
         workbook = None  # Track for cleanup in finally
+        reference_workbook = None
+        reference_layouts = {}
+        current_layouts = {}
         
         try:
             self._init_excel()
@@ -306,6 +593,29 @@ class PDFService:
                 Notify=False,
                 AddToMru=False
             )
+
+            if layout_reference_path:
+                for sheet_name in sheet_names:
+                    try:
+                        key = sheet_name.strip().lower()
+                        reference_layouts[key] = self._read_sheet_layout(
+                            layout_reference_path, sheet_name, print_area
+                        )
+                        current_layouts[key] = self._read_sheet_layout(
+                            file_path, sheet_name, print_area
+                        )
+                    except Exception as layout_error:
+                        utils.logger.warning(
+                            f"Could not read reference layout for '{sheet_name}': {layout_error}"
+                        )
+                utils.unblock_file(layout_reference_path)
+                reference_workbook = self.excel_app.Workbooks.Open(
+                    layout_reference_path,
+                    ReadOnly=True,
+                    UpdateLinks=False,
+                    Notify=False,
+                    AddToMru=False,
+                )
             
             # Find and export each sheet
             for idx, sheet_name in enumerate(sheet_names, 1):
@@ -317,7 +627,7 @@ class PDFService:
                         sheet = s
                         break
                 
-                # Fallback: Try variant names (underscore <-> dash)
+                # Fallback 1: Try variant names (underscore <-> dash)
                 if sheet is None:
                     # Try replacing dash with underscore
                     variant1 = sheet_name.replace("-", "_")
@@ -330,22 +640,58 @@ class PDFService:
                             sheet = s
                             utils.logger.info(f"Found sheet with variant name: '{s_name}' for '{sheet_name}'")
                             break
+
+                # Fallback 2: Try case-insensitive matching
+                if sheet is None:
+                    target_lower = sheet_name.strip().lower()
+                    for s in workbook.Sheets:
+                        if s.Name.strip().lower() == target_lower:
+                            sheet = s
+                            utils.logger.info(f"Found sheet with case-insensitive name: '{s.Name}' for '{sheet_name}'")
+                            break
                 
                 if sheet is None:
                     utils.logger.warning(f"Sheet '{sheet_name}' not found in {file_path}")
                     continue
+
+                reference_layout = reference_layouts.get(sheet_name.strip().lower())
+                if reference_layout:
+                    try:
+                        reference_sheet = self._find_sheet(reference_workbook, sheet_name)
+                        if reference_sheet:
+                            self._sync_changed_layout_from_com(
+                                sheet,
+                                reference_sheet,
+                                reference_layout,
+                                current_layouts.get(sheet_name.strip().lower()),
+                                print_area,
+                            )
+                        else:
+                            self._apply_sheet_layout(
+                                sheet,
+                                reference_layout,
+                                current_layouts.get(sheet_name.strip().lower()),
+                            )
+                        self.excel_app.CutCopyMode = False
+                        utils.logger.info(
+                            f"Synchronized layout for '{sheet_name}' from comparison reference"
+                        )
+                    except Exception as sync_error:
+                        utils.logger.warning(
+                            f"Could not synchronize layout for '{sheet_name}': {sync_error}"
+                        )
                 
                 # Setup PageSetup for export (essential properties only for maximum speed)
                 try:
                     sheet.Activate()
                     ps = sheet.PageSetup
                     
-                    # Set print area & essential fit: Fit width to 1 page, allow natural vertical paging
+                    # Set print area & essential fit: Fit width & height to 1 page (do not split into multiple pages)
                     ps.PrintArea = print_area
                     ps.PaperSize = 9    # A4
                     ps.Zoom = False
                     ps.FitToPagesWide = 1
-                    ps.FitToPagesTall = False
+                    ps.FitToPagesTall = 1
                     ps.CenterHorizontally = True
                 except Exception as e:
                     utils.logger.error(f"Error setting up sheet '{sheet_name}': {e}")
@@ -388,6 +734,9 @@ class PDFService:
             
             workbook.Close(SaveChanges=False)
             workbook = None  # Mark closed to prevent double-close in finally
+            if reference_workbook:
+                reference_workbook.Close(SaveChanges=False)
+                reference_workbook = None
             
             self.last_exported_page_labels = exported_page_labels
             
@@ -428,13 +777,19 @@ class PDFService:
                     workbook.Close(SaveChanges=False)
                 except:
                     pass
+            if reference_workbook:
+                try:
+                    reference_workbook.Close(SaveChanges=False)
+                except Exception:
+                    pass
             # Only cleanup Excel if not managed by the outer retry wrapper
             if not _keep_alive:
                 self._cleanup_excel()
 
-    def export_green_sheets_direct(self, file_path, output_pdf_path, print_area="EX1:GR76", _keep_alive=True):
+    def export_green_sheets_direct(self, file_path, output_pdf_path, print_area="EX1:GR76", _keep_alive=True,
+                                   sheet_mode="green"):
         """
-        Single-pass high-speed: Detects all green-tab sheets in file_path and exports them to PDF directly.
+        Single-pass high-speed: detects matching sheets and exports them to PDF directly.
         Eliminates opening the workbook twice.
         Returns: (success: bool, green_sheet_names: list)
         """
@@ -456,19 +811,30 @@ class PDFService:
                 AddToMru=False
             )
             
-            green_sheets = []
+            selected_sheets = []
             for sheet in workbook.Sheets:
                 try:
-                    if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
-                        green_sheets.append(sheet)
+                    if sheet_mode == "visible":
+                        is_visible = sheet.Visible in (-1, True, 1)
+                        if not is_visible:
+                            continue
+                        used = sheet.UsedRange
+                        if used.Rows.Count == 1 and used.Columns.Count == 1:
+                            if used.Value is None or str(used.Value).strip() == "":
+                                continue
+                        selected_sheets.append(sheet)
+                    elif int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                        selected_sheets.append(sheet)
                 except Exception:
                     continue
-                    
-            if not green_sheets:
-                utils.logger.warning(f"No green-tab sheets found in {file_path}")
+
+            if not selected_sheets:
+                description = "visible" if sheet_mode == "visible" else "green-tab"
+                utils.logger.warning(f"No {description} sheets found in {file_path}")
                 return False, []
-                
-            for idx, sheet in enumerate(green_sheets, 1):
+
+            self.last_selected_sheet_names = [sheet.Name.rstrip() for sheet in selected_sheets]
+            for idx, sheet in enumerate(selected_sheets, 1):
                 sheet_name = sheet.Name.rstrip()
                 try:
                     sheet.Activate()
@@ -477,7 +843,7 @@ class PDFService:
                     ps.PaperSize = 9
                     ps.Zoom = False
                     ps.FitToPagesWide = 1
-                    ps.FitToPagesTall = False
+                    ps.FitToPagesTall = 1
                     ps.CenterHorizontally = True
                 except Exception as e:
                     utils.logger.warning(f"PageSetup failed for '{sheet_name}': {e}")
@@ -545,13 +911,24 @@ class PDFService:
                     pass
             if not _keep_alive:
                 self._cleanup_excel()
+
+    def export_visible_sheets_direct(self, file_path, output_pdf_path, print_area="J2:BD76", _keep_alive=True):
+        """Export visible non-empty sheets while discovering them in the same Excel open."""
+        return self.export_green_sheets_direct(
+            file_path,
+            output_pdf_path,
+            print_area=print_area,
+            _keep_alive=_keep_alive,
+            sheet_mode="visible",
+        )
     
     # =========================================================================
     # PDF EXPORT WITH RETRY (LEGACY COMPATIBLE)
     # =========================================================================
     
-    def export_sheets_to_pdf_with_retry(self, file_path, sheet_names, output_pdf_path, 
-                                         print_area="EX1:GR76", max_retries=3, _keep_alive=False):
+    def export_sheets_to_pdf_with_retry(self, file_path, sheet_names, output_pdf_path,
+                                         print_area="EX1:GR76", max_retries=3, _keep_alive=False,
+                                         layout_reference_path=None):
         """
         Export sheets to PDF with retry mechanism and fallback.
         
@@ -585,7 +962,10 @@ class PDFService:
                     utils.logger.info(f"PDF export attempt {attempt + 1}/{max_retries}")
                     
                     # === FIX: Keep Excel alive between retries (saves 2-5s startup cost per retry) ===
-                    success = self.export_sheets_to_pdf(file_path, sheet_names, output_pdf_path, print_area, _keep_alive=True)
+                    success = self.export_sheets_to_pdf(
+                        file_path, sheet_names, output_pdf_path, print_area,
+                        _keep_alive=True, layout_reference_path=layout_reference_path
+                    )
                     if success and os.path.exists(output_pdf_path):
                         utils.logger.info(f"PDF export successful on attempt {attempt + 1}")
                         return True

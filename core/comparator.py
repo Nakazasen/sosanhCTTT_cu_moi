@@ -32,25 +32,25 @@ class Comparator:
                                   progress_callback=None, settings=None):
         """
         Phương pháp Legacy Screenshot - Mô phỏng thao tác người dùng từ phiên bản cũ.
-        
+
         Khác với phương pháp Screenshot hiện tại:
         - Mở Excel trực tiếp (visible) trên màn hình
         - Chụp ảnh từ màn hình thực tế (không qua temp workbook)
         - Hỗ trợ nhiều chế độ màn hình (PC, VPS, Monitor phụ)
         - Tiền xử lý file (ẩn cột, đồng bộ độ rộng cột)
-        
+
         Args:
             new_file_list: Danh sách file CTTT mới
             old_file_list: Danh sách file CTTT cũ
             status_callback: Hàm callback cập nhật trạng thái
             progress_callback: Hàm callback cập nhật tiến độ (0-100)
             settings: Dict cấu hình
-            
+
         Returns:
             Elapsed time in seconds
         """
         from services.legacy_screenshot_service import LegacyScreenshotService
-        
+
         if len(new_file_list) != len(old_file_list):
             raise ValueError("File lists must have equal length.")
         
@@ -61,8 +61,10 @@ class Comparator:
         
         # Áp dụng cài đặt
         legacy_service.set_screen_mode(settings.get('screen_mode', 'pc'))
-        legacy_service.set_zoom_level(settings.get('zoom', config.DEFAULT_ZOOM))
-        legacy_service.set_goto_address(settings.get('goto_address', config.DEFAULT_GOTO_ADDRESS))
+        goto_addr = settings.get('goto_address')
+        if not goto_addr or str(goto_addr).strip().upper() in ['A1', '']:
+            goto_addr = config.DEFAULT_GOTO_ADDRESS
+        legacy_service.set_goto_address(goto_addr)
         legacy_service.set_highlight_settings(
             settings.get('highlight_fill_color', config.HIGHLIGHT_FILL_COLOR),
             settings.get('highlight_fill_opacity', config.DEFAULT_FILL_OPACITY)
@@ -119,8 +121,20 @@ class Comparator:
         """
         if len(new_file_list) != len(old_file_list):
             raise ValueError("File lists must have equal length.")
-            
+
+        settings = settings or {}
         self.settings = settings
+
+        # Validate the selected document type before creating an output folder.
+        # This prevents a wrong mode from silently completing with an empty result.
+        from services.validation_service import ValidationService
+        selected_mode = settings.get("doc_mode", config.DOC_MODE_STANDARD_CTTT)
+        is_valid_mode, mode_error = ValidationService.validate_document_mode(
+            new_file_list, old_file_list, selected_mode
+        )
+        if not is_valid_mode:
+            raise ValueError(mode_error)
+
               # Start timing
         start_time = time.time()
         
@@ -413,8 +427,10 @@ class Comparator:
         
         total_files = len(new_file_list)
         all_comparison_pdfs = []  # For final merged PDF
+        self.last_compared_count = 0
         
         for idx, (new_path, old_path) in enumerate(zip(new_file_list, old_file_list)):
+            file_started_at = time.perf_counter()
             file_name = os.path.basename(new_path)
             file_comparison_images = {}  # {sheet_name: comparison_img_path}
             file_comparison_pdfs = []
@@ -455,12 +471,58 @@ class Comparator:
                         continue
                     sheets_to_compare = colored_sheets
                     
+                elif doc_mode == config.DOC_MODE_DUKC_OTHER:
+                    # DUKC OTHER MODE: CHỈ SO SÁNH SHEET FORM (không phân biệt hoa thường)
+                    if status_callback:
+                        status_callback(f"Finding sheet 'Form': {file_name}")
+                    form_sheet_new = self.pdf_service.find_sheet_by_name(new_path, "form")
+                    form_sheet_old = self.pdf_service.find_sheet_by_name(old_path, "form")
+
+                    if not form_sheet_new:
+                        utils.logger.warning(f"Sheet 'Form' not found in NEW file {file_name}")
+                        self.report_service.add_result(file_name, "Form", "MISSING", "Không tìm thấy sheet 'Form' ở file mới")
+                        continue
+
+                    if not form_sheet_old:
+                        utils.logger.warning(f"Sheet 'Form' not found in OLD file {os.path.basename(old_path)}")
+                        self.report_service.add_result(file_name, "Form", "MISSING", "Không tìm thấy sheet 'Form' ở file cũ")
+                        continue
+
+                    if status_callback:
+                        status_callback(f"Exporting PDF (NEW - {form_sheet_new}): {file_name}")
+                    pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
+                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(new_path, [form_sheet_new], pdf_new_path, print_area=print_area, _keep_alive=True)
+                    if not success_new:
+                        self.report_service.add_result(file_name, form_sheet_new, "ERROR", "Không xuất được PDF mới")
+                        continue
+
+                    if status_callback:
+                        status_callback(f"Exporting PDF (OLD - {form_sheet_old}): {os.path.basename(old_path)}")
+                    pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
+                    # Normalize the OLD sheet geometry to NEW in memory. Fractional
+                    # row/column size drift otherwise makes unchanged text reflow and
+                    # produces widespread pixel-level false positives in PDF output.
+                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        old_path, [form_sheet_old], pdf_old_path,
+                        print_area=print_area, _keep_alive=True,
+                        layout_reference_path=new_path
+                    )
+                    if not success_old:
+                        self.report_service.add_result(file_name, form_sheet_old, "ERROR", "Không xuất được PDF cũ")
+                        continue
+                    sheets_to_compare = getattr(self.pdf_service, 'last_exported_page_labels', None) or [form_sheet_new]
+
                 else:
-                    # DUKC / OTHER MODES: Visible sheets with exact sheet name matching
+                    # DUKC CTTT MODE: Visible sheets with exact sheet name matching
                     if status_callback:
                         status_callback(f"Reading visible sheets: {file_name}")
-                    visible_new = self.pdf_service.get_visible_sheets(new_path)
-                    visible_old = self.pdf_service.get_visible_sheets(old_path)
+                    # XLSX/XLSM metadata avoids two expensive Excel COM opens.
+                    visible_new = self.pdf_service.get_visible_sheets_fast(new_path)
+                    visible_old = self.pdf_service.get_visible_sheets_fast(old_path)
+                    if visible_new is None:
+                        visible_new = self.pdf_service.get_visible_sheets(new_path)
+                    if visible_old is None:
+                        visible_old = self.pdf_service.get_visible_sheets(old_path)
                     
                     matching_sheets = []
                     for s in visible_new:
@@ -479,11 +541,14 @@ class Comparator:
                         utils.logger.warning(f"No matching visible sheets found between {file_name} and {os.path.basename(old_path)}")
                         self.report_service.add_result(file_name, "N/A", "WARNING", "Không tìm thấy sheet nào khớp tên giữa 2 file")
                         continue
-                        
+
                     if status_callback:
                         status_callback(f"Exporting PDF (NEW): {file_name}")
                     pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
-                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(new_path, matching_sheets, pdf_new_path, print_area=print_area, _keep_alive=True)
+                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        new_path, matching_sheets, pdf_new_path,
+                        print_area=print_area, _keep_alive=True
+                    )
                     if not success_new:
                         self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF mới")
                         continue
@@ -496,6 +561,10 @@ class Comparator:
                         self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
                         continue
                     sheets_to_compare = getattr(self.pdf_service, 'last_exported_page_labels', None) or matching_sheets
+
+                utils.logger.info(
+                    f"[Timing] PDF export {file_name}: {time.perf_counter() - file_started_at:.2f}s"
+                )
                 
                 # Step 4: Compare PDFs page by page
                 if status_callback:
@@ -581,6 +650,12 @@ class Comparator:
                         self.report_service.add_result(file_name, sheet_name, "FAIL", message, comparison_img_path)
                     else:
                         self.report_service.add_result(file_name, sheet_name, "OK", message)
+
+                utils.logger.info(
+                    f"[Timing] Total compare {file_name}: {time.perf_counter() - file_started_at:.2f}s"
+                )
+
+                self.last_compared_count += 1
                 
                 # === FIX 3: Free rendered images from RAM before next file ===
                 del new_images
@@ -692,21 +767,41 @@ class Comparator:
                     self.report_service.add_result(file_name, "N/A", "ERROR", "Không thể mở file mới")
                     continue
                 
+                doc_mode = settings.get('doc_mode', config.DOC_MODE_STANDARD_CTTT)
                 colored_sheets = []
-                for sheet in wb_new.Sheets:
-                    try:
-                        if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
-                            colored_sheets.append(sheet.Name.rstrip())
-                    except Exception:
-                        continue
+
+                if doc_mode == config.DOC_MODE_DUKC_OTHER:
+                    for sheet in wb_new.Sheets:
+                        try:
+                            if sheet.Name.strip().lower() == "form":
+                                colored_sheets.append(sheet.Name.rstrip())
+                                break
+                        except Exception:
+                            continue
+                elif doc_mode == config.DOC_MODE_DUKC_CTTT:
+                    for sheet in wb_new.Sheets:
+                        try:
+                            is_visible = (sheet.Visible == -1 or sheet.Visible is True or sheet.Visible == 1)
+                            if is_visible:
+                                colored_sheets.append(sheet.Name.rstrip())
+                        except Exception:
+                            continue
+                else:
+                    for sheet in wb_new.Sheets:
+                        try:
+                            if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                                colored_sheets.append(sheet.Name.rstrip())
+                        except Exception:
+                            continue
                 
                 self.excel_service.close_workbook(wb_new)
                 
                 if not colored_sheets:
-                    self.report_service.add_result(file_name, "N/A", "ERROR", "Không tìm thấy sheet màu xanh")
+                    err_msg = "Không tìm thấy sheet 'Form'" if doc_mode == config.DOC_MODE_DUKC_OTHER else "Không tìm thấy sheet màu xanh"
+                    self.report_service.add_result(file_name, "N/A", "ERROR", err_msg)
                     continue
                 
-                utils.logger.info(f"Found {len(colored_sheets)} green sheets in {file_name}: {colored_sheets}")
+                utils.logger.info(f"Found {len(colored_sheets)} sheets to compare in {file_name}: {colored_sheets}")
                 
                 # Chụp ảnh từ file mới
                 if status_callback:

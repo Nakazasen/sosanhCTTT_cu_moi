@@ -64,10 +64,12 @@ class LegacyScreenshotService:
     
     def set_goto_address(self, address):
         """Đặt địa chỉ cell để định vị trước khi chụp (ví dụ: 'EX1' hoặc 'EX')"""
-        addr = (str(address).strip() if address else '') or 'EX1'
-        if addr.isalpha():
+        addr = (str(address).strip() if address else '')
+        if not addr or addr.upper() == 'A1':
+            addr = 'EX1'
+        elif addr.isalpha():
             addr = f"{addr}1"
-        self.goto_address = addr
+        self.goto_address = addr.upper()
     
     def set_zoom_level(self, zoom):
         """Đặt mức zoom cho Excel"""
@@ -151,20 +153,24 @@ class LegacyScreenshotService:
             return None, None
     
     def connect_to_excel_window(self, excel):
-        """Kết nối với cửa sổ Excel qua PyWinAuto UIA"""
-        if not PYWINAUTO_AVAILABLE:
-            utils.logger.error("pywinauto không khả dụng")
-            return None
+        """Kết nối và đưa cửa sổ Excel lên foreground"""
         try:
-            app = Application(backend='uia').connect(path=excel.Path, found_index=0)
-            for w in app.windows():
-                if "Excel" in w.window_text():
-                    w.set_focus()
-                    return app
-            raise Exception("Không thể tìm thấy cửa sổ Excel")
+            hwnd = excel.Hwnd
+            import win32gui
+            import win32con
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            win32gui.SetForegroundWindow(hwnd)
         except Exception as e:
-            utils.logger.error(f"Không thể kết nối với cửa sổ Excel: {e}")
-            return None
+            utils.logger.debug(f"Could not bring Excel window to foreground: {e}")
+
+        if not PYWINAUTO_AVAILABLE:
+            return True
+        try:
+            app = Application(backend='uia').connect(handle=excel.Hwnd)
+            return app
+        except Exception as e:
+            utils.logger.debug(f"pywinauto connect failed, fallback to COM: {e}")
+            return True
     
     def close_excel(self, excel):
         """Đóng Excel và giải phóng tài nguyên"""
@@ -277,15 +283,17 @@ class LegacyScreenshotService:
                 except Exception:
                     pass
                     
-                # Di chuyển con trỏ và cuộn màn hình đến ô chỉ định (goto_address, ví dụ EX1)
-                goto_addr = (self.goto_address or 'EX1').strip()
+                # Di chuyển con trỏ tới ô chỉ định (goto_address, ví dụ EX1)
+                goto_addr = (self.goto_address or 'EX1').strip().upper()
                 if goto_addr.isalpha():
                     goto_addr = f"{goto_addr}1"
                 try:
-                    excel.Application.Goto(Reference=sheet.Range(goto_addr), Scroll=True)
+                    sheet.Range(goto_addr).Select()
+                    excel.ActiveWindow.ScrollRow = 1
+                    excel.ActiveWindow.ScrollColumn = 1
                 except Exception:
                     try:
-                        sheet.Range(goto_addr).Select()
+                        sheet.Range("EX1").Select()
                     except Exception:
                         pass
 
@@ -329,22 +337,22 @@ class LegacyScreenshotService:
         utils.logger.info(f"[Legacy] Processing sheet: {sheet.Name}")
         sheet.Activate()
         
-        # Di chuyển con trỏ và cuộn màn hình đến ô chỉ định (goto_address, ví dụ EX1)
-        goto_addr = (self.goto_address or 'EX1').strip()
-        if goto_addr.isalpha():
-            goto_addr = f"{goto_addr}1"
-            
+        # 1. Bring Excel to foreground & Maximize
         try:
-            excel.Application.Goto(Reference=sheet.Range(goto_addr), Scroll=True)
-            utils.logger.info(f"[Legacy] Moved cursor & scrolled to {goto_addr}")
-        except Exception as goto_err:
-            try:
-                sheet.Range(goto_addr).Select()
-                excel.ActiveWindow.ScrollRow = 1
-                excel.ActiveWindow.ScrollColumn = sheet.Range(goto_addr).Column
-            except Exception:
-                pass
-                
+            hwnd = excel.Hwnd
+            import win32gui
+            import win32con
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+        try:
+            excel.Application.WindowState = -4137  # xlMaximized
+        except Exception:
+            pass
+
+        # 2. Cài đặt Zoom, ẩn Ribbon, tắt Gridlines trước khi căn chỉnh viewport
         try:
             excel.ActiveWindow.Zoom = self.zoom_level
         except Exception:
@@ -352,11 +360,45 @@ class LegacyScreenshotService:
         
         try:
             excel.ExecuteExcel4Macro("SHOW.TOOLBAR(\"Ribbon\",False)")
-        except:
+        except Exception:
             pass
         
         self.check_and_turn_off_gridlines(excel)
-        time.sleep(1)
+
+        # 3. Đảm bảo ẩn các cột BE..EV (57..152) để cột EX (154) nằm ngay cạnh cột BD (56)
+        try:
+            for col_idx in range(57, 153):
+                try:
+                    sheet.Columns(col_idx).EntireColumn.Hidden = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 4. Di chuyển con trỏ và cuộn màn hình đến ô chỉ định (goto_address, ví dụ EX1)
+        goto_addr = (self.goto_address or 'EX1').strip().upper()
+        if goto_addr.isalpha():
+            goto_addr = f"{goto_addr}1"
+
+        try:
+            target_range = sheet.Range(goto_addr)
+            target_range.Select()
+            # Cuộn viewport về hàng 1 và cột 1 (A1) để cột A..BD chiếm 1/3 bên trái,
+            # và cột EX..GR chiếm đúng 1/3 ở giữa màn hình (theo cơ chế ẩn cột của phiên bản 6)
+            excel.ActiveWindow.ScrollRow = 1
+            excel.ActiveWindow.ScrollColumn = 1
+            utils.logger.info(f"[Legacy] Selected target cell {goto_addr} and aligned viewport")
+        except Exception as goto_err:
+            utils.logger.warning(f"[Legacy] Error selecting {goto_addr}: {goto_err}")
+            try:
+                sheet.Range("EX1").Select()
+                excel.ActiveWindow.ScrollRow = 1
+                excel.ActiveWindow.ScrollColumn = 1
+            except Exception:
+                pass
+
+        # 5. Đợi Excel ổn định và render đầy đủ
+        time.sleep(1.5)
         
         bbox = pyautogui.screenshot().getbbox()
         if bbox:

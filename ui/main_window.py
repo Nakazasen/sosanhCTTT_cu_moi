@@ -85,6 +85,7 @@ class MainWindow:
         self.old_dir_path = tk.StringVar()
         self.old_files_display = tk.StringVar()
         self.result_path = tk.StringVar()
+        self.is_processing = False
         
         # Settings Variables
         self.zoom_var = tk.IntVar(value=self.settings.get("zoom_level", config.DEFAULT_ZOOM))
@@ -490,6 +491,9 @@ class MainWindow:
         tk.Button(btn_frame, text="Đóng", command=dialog.destroy, width=15).pack(side="right", padx=10)
 
     def run_comparison(self):
+        if self.is_processing:
+            return
+
         if not self.new_files or not self.old_files:
             messagebox.showwarning("Thiếu file", "Vui lòng chọn cả file cũ và mới.")
             return
@@ -506,7 +510,10 @@ class MainWindow:
                 "pdf_dpi": self.pdf_render_dpi.get()
             })
 
+        self.is_processing = True
         self.btn_run.config(state="disabled")
+        if hasattr(self, 'btn_legacy'):
+            self.btn_legacy.config(state="disabled")
         threading.Thread(target=self._run_thread, daemon=True).start()
 
     def _run_thread(self):
@@ -550,13 +557,16 @@ class MainWindow:
             else:
                 time_msg = ""
             
-            self.update_status("Hoàn thành!")
+            self.update_status("Hoành thành!")
             messagebox.showinfo("Hoàn thành", f"Đã xử lý tất cả các cặp file CTTT cũ, mới.{time_msg}")
         except Exception as e:
             self.update_status(f"Lỗi: {e}")
             messagebox.showerror("Lỗi", str(e))
         finally:
+            self.is_processing = False
             self.btn_run.config(state="normal")
+            if hasattr(self, 'btn_legacy'):
+                self.btn_legacy.config(state="normal")
             
     def update_status(self, msg):
         # Truncate long messages to prevent layout distortion
@@ -568,6 +578,9 @@ class MainWindow:
     # ========== LEGACY SCREENSHOT METHOD ==========
     def run_legacy_comparison(self):
         """Chạy phương pháp Legacy Screenshot (giống phiên bản cũ)"""
+        if self.is_processing:
+            return
+
         if not self.new_files or not self.old_files:
             messagebox.showwarning("Thiếu file", "Vui lòng chọn cả file cũ và mới.")
             return
@@ -589,9 +602,11 @@ class MainWindow:
         if not confirm:
             return
         
-        # Disable buttons
+        # Disable buttons & set processing flag
+        self.is_processing = True
         self.btn_run.config(state="disabled")
-        self.btn_legacy.config(state="disabled")
+        if hasattr(self, 'btn_legacy'):
+            self.btn_legacy.config(state="disabled")
         
         # Run in thread
         threading.Thread(target=self._run_legacy_thread, daemon=True).start()
@@ -643,8 +658,10 @@ class MainWindow:
             self.update_status(f"Lỗi: {e}")
             messagebox.showerror("Lỗi", str(e))
         finally:
+            self.is_processing = False
             self.btn_run.config(state="normal")
-            self.btn_legacy.config(state="normal")
+            if hasattr(self, 'btn_legacy'):
+                self.btn_legacy.config(state="normal")
 
 
     # ========== COLOR PICKER METHODS (Critical - was missing) ==========

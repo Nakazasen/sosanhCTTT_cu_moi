@@ -11,6 +11,7 @@ Bao gồm:
 import os
 import tkinter as tk
 from tkinter import messagebox
+import config
 import utils
 
 
@@ -250,6 +251,162 @@ class ValidationService:
                 return (False, f"Cặp {i+1} - File cũ lỗi: {err}")
         
         return (True, None)
+
+    @staticmethod
+    def _inspect_workbook(file_path):
+        """Read the sheet metadata needed to validate a selected document mode."""
+        import posixpath
+        import zipfile
+        from xml.etree import ElementTree
+
+        extension = os.path.splitext(file_path)[1].lower()
+        if extension not in ('.xlsx', '.xlsm'):
+            return None
+
+        spreadsheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        relationship_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        package_relationship_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+        with zipfile.ZipFile(file_path) as archive:
+            workbook_xml = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+            relationships_xml = ElementTree.fromstring(
+                archive.read("xl/_rels/workbook.xml.rels")
+            )
+            relationship_targets = {
+                item.attrib["Id"]: item.attrib["Target"]
+                for item in relationships_xml.findall(
+                    f"{{{package_relationship_ns}}}Relationship"
+                )
+            }
+
+            sheets = []
+            for sheet in workbook_xml.findall(
+                f".//{{{spreadsheet_ns}}}sheet"
+            ):
+                relation_id = sheet.attrib.get(f"{{{relationship_ns}}}id")
+                target = relationship_targets.get(relation_id, "")
+                if target.startswith("/"):
+                    worksheet_path = target.lstrip("/")
+                else:
+                    worksheet_path = posixpath.normpath(posixpath.join("xl", target))
+
+                rgb = None
+                has_content = False
+                if worksheet_path in archive.namelist():
+                    worksheet_xml = ElementTree.fromstring(archive.read(worksheet_path))
+                    tab_color = worksheet_xml.find(
+                        f"./{{{spreadsheet_ns}}}sheetPr/{{{spreadsheet_ns}}}tabColor"
+                    )
+                    if tab_color is not None and tab_color.attrib.get("rgb"):
+                        rgb = tab_color.attrib["rgb"][-6:].upper()
+                    # Keep the fast-path behaviour aligned with Excel's UsedRange
+                    # check: do not compare a merely visible, empty worksheet.
+                    has_content = worksheet_xml.find(
+                        f".//{{{spreadsheet_ns}}}sheetData/{{{spreadsheet_ns}}}row/{{{spreadsheet_ns}}}c"
+                    ) is not None
+
+                sheets.append({
+                    "name": sheet.attrib.get("name", ""),
+                    "visible": sheet.attrib.get("state", "visible") == "visible",
+                    "tab_rgb": rgb,
+                    "has_content": has_content,
+                })
+            return sheets
+
+    @staticmethod
+    def validate_document_mode(new_files, old_files, doc_mode):
+        """Ensure selected workbooks structurally match the requested comparison mode."""
+        valid_pairs, pair_error = ValidationService.validate_file_pairs(new_files, old_files)
+        if not valid_pairs:
+            return False, pair_error
+
+        # Excel stores COLOR_GREEN_TAB as BGR while openpyxl exposes RGB.
+        ole_color = config.COLOR_GREEN_TAB
+        expected_green = f"{ole_color & 0xFF:02X}{(ole_color >> 8) & 0xFF:02X}{(ole_color >> 16) & 0xFF:02X}"
+        errors = []
+
+        for pair_index, (new_path, old_path) in enumerate(zip(new_files, old_files), 1):
+            try:
+                new_sheets = ValidationService._inspect_workbook(new_path)
+                old_sheets = ValidationService._inspect_workbook(old_path)
+            except Exception as error:
+                errors.append(
+                    f"Cặp {pair_index}: không thể đọc cấu trúc workbook ({error})."
+                )
+                continue
+
+            # Legacy .xls cannot be inspected safely without launching Excel; let the
+            # existing COM workflow validate those files later.
+            if new_sheets is None or old_sheets is None:
+                continue
+
+            new_names = {item["name"].strip().lower() for item in new_sheets}
+            old_names = {item["name"].strip().lower() for item in old_sheets}
+            new_label = os.path.basename(new_path)
+            old_label = os.path.basename(old_path)
+
+            if doc_mode == config.DOC_MODE_DUKC_OTHER:
+                missing = []
+                if "form" not in new_names:
+                    missing.append(f"file mới '{new_label}'")
+                if "form" not in old_names:
+                    missing.append(f"file cũ '{old_label}'")
+                if missing:
+                    errors.append(
+                        f"Cặp {pair_index}: chế độ 'Tờ Phát Hành DUKC & Khác' yêu cầu "
+                        f"sheet 'Form', nhưng không tìm thấy trong {', '.join(missing)}."
+                    )
+
+            elif doc_mode == config.DOC_MODE_STANDARD_CTTT:
+                new_green = {
+                    item["name"].strip().lower()
+                    for item in new_sheets if item["tab_rgb"] == expected_green
+                }
+                old_green = {
+                    item["name"].strip().lower()
+                    for item in old_sheets if item["tab_rgb"] == expected_green
+                }
+                if "form" in new_names and "form" in old_names:
+                    errors.append(
+                        f"Cặp {pair_index}: cả hai file có sheet 'Form', không phù hợp với "
+                        "'CTTT thông thường'. Hãy chọn 'Tờ Phát Hành DUKC & Khác'."
+                    )
+                elif not new_green:
+                    suggestion = (
+                        " File có sheet 'Form'; hãy chọn loại 'Tờ Phát Hành DUKC & Khác'."
+                        if "form" in new_names else ""
+                    )
+                    errors.append(
+                        f"Cặp {pair_index}: file mới '{new_label}' không có sheet tab xanh "
+                        f"dành cho CTTT tiêu chuẩn.{suggestion}"
+                    )
+                elif not (new_green & old_green):
+                    errors.append(
+                        f"Cặp {pair_index}: không có sheet tab xanh trùng tên giữa "
+                        f"'{new_label}' và '{old_label}'."
+                    )
+
+            elif doc_mode == config.DOC_MODE_DUKC_CTTT:
+                visible_new = {
+                    item["name"].strip().lower() for item in new_sheets if item["visible"]
+                }
+                visible_old = {
+                    item["name"].strip().lower() for item in old_sheets if item["visible"]
+                }
+                if "form" in new_names and "form" in old_names:
+                    errors.append(
+                        f"Cặp {pair_index}: cả hai file có sheet 'Form'. Có thể bạn đã chọn "
+                        "nhầm loại; hãy dùng 'Tờ Phát Hành DUKC & Khác'."
+                    )
+                elif not (visible_new & visible_old):
+                    errors.append(
+                        f"Cặp {pair_index}: không có sheet hiển thị trùng tên giữa "
+                        f"'{new_label}' và '{old_label}'."
+                    )
+
+        if errors:
+            return False, "Loại tài liệu đã chọn không phù hợp:\n\n" + "\n".join(errors)
+        return True, None
     
     @staticmethod
     def validate_output_folder(folder_path):

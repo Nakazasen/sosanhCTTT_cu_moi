@@ -80,10 +80,10 @@ TRANSLATIONS = {
         "ja": "📑 2. 緊急対応添付作業指導書 (範囲 J2:BD76 - 複数シート)"
     },
     "mode_dukc_other": {
-        "vi": "📄 3. Tờ Phát Hành ĐƯKC & Khác (Vùng A1:AT120 - Nhiều sheet)",
-        "en": "📄 3. DUKC Release Form & Others (Range A1:AT120 - Multi-sheet)",
-        "zh": "📄 3. 应急应对发行表及其它 (范围 A1:AT120 - 多工作表)",
-        "ja": "📄 3. 緊急対応発行票・その他 (範囲 A1:AT120 - 複数シート)"
+        "vi": "📄 3. Tờ Phát Hành ĐƯKC & Khác (Vùng A1:AT120 - Sheet Form)",
+        "en": "📄 3. DUKC Release Form & Others (Range A1:AT120 - Sheet Form)",
+        "zh": "📄 3. 应急应对发行表及其它 (范围 A1:AT120 - Form 工作表)",
+        "ja": "📄 3. 緊急対応発行票・その他 (範囲 A1:AT120 - Sheet Form)"
     },
     "print_area_label": {
         "vi": "Phạm vi so sánh:",

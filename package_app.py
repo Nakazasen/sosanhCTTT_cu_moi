@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -89,10 +90,26 @@ def publish_installer(installer: Path, destination: Path = PUBLISH_DIR) -> Path:
     return final
 
 
-def publish_catalog(installer: Path, notes: str, destination: Path = UPDATE_DIR) -> Path:
+def build_update_package(installer: Path) -> Path:
+    """Create a verified .mpupdate package; it is never merely a renamed exe."""
+    package = ARTIFACTS / f"SosanhCTTT-{release()['version']}.mpupdate"
+    manifest = {
+        "schema": 1, "kind": "installer", "version": release()["version"],
+        "installer": installer.name,
+        "files": [{"path": installer.name, "size": installer.stat().st_size, "sha256": sha256(installer)}],
+    }
+    temporary = package.with_suffix(".mpupdate.part")
+    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+        archive.write(installer, installer.name)
+    os.replace(temporary, package)
+    return package
+
+
+def publish_catalog(package: Path, notes: str, destination: Path = UPDATE_DIR) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
-    published = publish_installer(installer, destination)
-    catalog = {"schema": 1, "version": release()["version"], "installer": published.name, "sha256": sha256(published), "size": published.stat().st_size, "notes": notes}
+    published = publish_installer(package, destination)
+    catalog = {"schema": 1, "version": release()["version"], "package": published.name, "sha256": sha256(published), "size": published.stat().st_size, "notes": notes}
     partial = destination / "latest.json.part"
     partial.write_text(json.dumps(catalog, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
     os.replace(partial, destination / "latest.json")
@@ -110,7 +127,7 @@ def main() -> int:
     if args.publish:
         print(publish_installer(installer))
     if args.publish_update:
-        print(publish_catalog(installer, args.release_notes))
+        print(publish_catalog(build_update_package(installer), args.release_notes))
     print(installer)
     return 0
 
