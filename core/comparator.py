@@ -129,8 +129,9 @@ class Comparator:
         # This prevents a wrong mode from silently completing with an empty result.
         from services.validation_service import ValidationService
         selected_mode = settings.get("doc_mode", config.DOC_MODE_STANDARD_CTTT)
+        user_lang = settings.get("language", "vi")
         is_valid_mode, mode_error = ValidationService.validate_document_mode(
-            new_file_list, old_file_list, selected_mode
+            new_file_list, old_file_list, selected_mode, lang=user_lang
         )
         if not is_valid_mode:
             raise ValueError(mode_error)

@@ -1,10 +1,12 @@
 """
 Validation Service - Kiểm tra và xác thực dữ liệu đầu vào
+Hỗ trợ đa ngôn ngữ và thông báo lỗi rõ ràng, trực quan, có hướng dẫn khắc phục.
 
 Bao gồm:
-- Validation cho các giá trị cấu hình (DPI, threshold, etc.)
+- Validation cho các giá trị cấu hình (DPI, threshold, colors, etc.)
 - Input sanitization
-- File validation
+- File validation & Pair matching validation
+- Document mode structural validation (Excel OpenXML inspection)
 - Message box helpers với suppression support
 """
 
@@ -13,10 +15,11 @@ import tkinter as tk
 from tkinter import messagebox
 import config
 import utils
+from ui.translations import get_text
 
 
 class ValidationService:
-    """Service validation và message handling."""
+    """Service validation và message handling đa ngôn ngữ."""
     
     # Default ranges
     DPI_MIN = 50
@@ -44,13 +47,14 @@ class ValidationService:
     # =========================================================================
     
     @staticmethod
-    def validate_dpi(value, auto_fix=True):
+    def validate_dpi(value, auto_fix=True, lang="vi"):
         """
         Validate DPI value.
         
         Args:
             value: Giá trị DPI cần validate
             auto_fix: Nếu True, tự động điều chỉnh về giá trị hợp lệ
+            lang: Mã ngôn ngữ ('vi', 'en', 'zh', 'ja')
             
         Returns:
             Tuple (is_valid, fixed_value, error_message)
@@ -61,157 +65,148 @@ class ValidationService:
             if dpi < ValidationService.DPI_MIN:
                 if auto_fix:
                     return (False, ValidationService.DPI_MIN, 
-                           f"DPI tối thiểu là {ValidationService.DPI_MIN}. Đã điều chỉnh.")
-                return (False, dpi, f"DPI phải >= {ValidationService.DPI_MIN}")
+                            get_text("dpi_min_warning", lang))
+                return (False, dpi, f"DPI >= {ValidationService.DPI_MIN}")
             
             if dpi > ValidationService.DPI_MAX:
                 if auto_fix:
                     return (False, ValidationService.DPI_MAX,
-                           f"DPI tối đa là {ValidationService.DPI_MAX}. Đã điều chỉnh.")
-                return (False, dpi, f"DPI phải <= {ValidationService.DPI_MAX}")
+                            get_text("dpi_max_warning", lang))
+                return (False, dpi, f"DPI <= {ValidationService.DPI_MAX}")
             
             return (True, dpi, None)
             
         except (ValueError, TypeError):
             if auto_fix:
                 return (False, ValidationService.DPI_DEFAULT,
-                       f"DPI không hợp lệ. Đã reset về {ValidationService.DPI_DEFAULT}.")
-            return (False, None, "DPI phải là số nguyên")
+                        get_text("dpi_invalid_msg", lang))
+            return (False, None, get_text("dpi_invalid", lang))
     
     @staticmethod
-    def validate_threshold(value, auto_fix=True):
+    def validate_threshold(value, auto_fix=True, lang="vi"):
         """Validate difference threshold (0-255)."""
         try:
             val = int(value)
             
             if val < ValidationService.THRESHOLD_MIN:
                 if auto_fix:
-                    return (False, ValidationService.THRESHOLD_MIN, "Ngưỡng tối thiểu là 0")
-                return (False, val, "Ngưỡng phải >= 0")
+                    return (False, ValidationService.THRESHOLD_MIN, "Threshold >= 0")
+                return (False, val, "Threshold >= 0")
             
             if val > ValidationService.THRESHOLD_MAX:
                 if auto_fix:
-                    return (False, ValidationService.THRESHOLD_MAX, "Ngưỡng tối đa là 255")
-                return (False, val, "Ngưỡng phải <= 255")
+                    return (False, ValidationService.THRESHOLD_MAX, "Threshold <= 255")
+                return (False, val, "Threshold <= 255")
             
             return (True, val, None)
             
         except (ValueError, TypeError):
             if auto_fix:
-                return (False, ValidationService.THRESHOLD_DEFAULT, "Ngưỡng không hợp lệ")
-            return (False, None, "Ngưỡng phải là số nguyên")
+                return (False, ValidationService.THRESHOLD_DEFAULT, "Invalid threshold")
+            return (False, None, "Invalid threshold")
     
     @staticmethod
-    def validate_dilate_size(value, auto_fix=True):
+    def validate_dilate_size(value, auto_fix=True, lang="vi"):
         """Validate dilate size (1-9, odd number)."""
         try:
             val = int(value)
             
             if val < ValidationService.DILATE_SIZE_MIN:
                 if auto_fix:
-                    return (False, ValidationService.DILATE_SIZE_MIN, "Độ dày tối thiểu là 1")
-                return (False, val, "Độ dày phải >= 1")
+                    return (False, ValidationService.DILATE_SIZE_MIN, "Dilate size >= 1")
+                return (False, val, "Dilate size >= 1")
             
             if val > ValidationService.DILATE_SIZE_MAX:
                 if auto_fix:
-                    return (False, ValidationService.DILATE_SIZE_MAX, "Độ dày tối đa là 9")
-                return (False, val, "Độ dày phải <= 9")
+                    return (False, ValidationService.DILATE_SIZE_MAX, "Dilate size <= 9")
+                return (False, val, "Dilate size <= 9")
             
             # Ensure odd number
             if val % 2 == 0:
                 fixed = max(1, val - 1)
                 if auto_fix:
-                    return (False, fixed, "Độ dày phải là số lẻ. Đã điều chỉnh.")
-                return (False, val, "Độ dày phải là số lẻ")
+                    return (False, fixed, "Dilate size must be odd")
+                return (False, val, "Dilate size must be odd")
             
             return (True, val, None)
             
         except (ValueError, TypeError):
             if auto_fix:
-                return (False, ValidationService.DILATE_SIZE_DEFAULT, "Độ dày không hợp lệ")
-            return (False, None, "Độ dày phải là số nguyên lẻ")
+                return (False, ValidationService.DILATE_SIZE_DEFAULT, "Invalid dilate size")
+            return (False, None, "Invalid dilate size")
     
     @staticmethod
-    def validate_dilate_iterations(value, auto_fix=True):
+    def validate_dilate_iterations(value, auto_fix=True, lang="vi"):
         """Validate dilate iterations (1-3)."""
         try:
             val = int(value)
-            
             val = max(ValidationService.DILATE_ITER_MIN, 
                      min(ValidationService.DILATE_ITER_MAX, val))
-            
             return (True, val, None)
-            
         except (ValueError, TypeError):
             if auto_fix:
-                return (False, ValidationService.DILATE_ITER_DEFAULT, "Số lần nở không hợp lệ")
-            return (False, None, "Số lần nở phải là số nguyên 1-3")
+                return (False, ValidationService.DILATE_ITER_DEFAULT, "Invalid iterations")
+            return (False, None, "Invalid iterations")
     
     @staticmethod
-    def validate_opacity(value, auto_fix=True):
+    def validate_opacity(value, auto_fix=True, lang="vi"):
         """Validate opacity percentage (0-100)."""
         try:
             val = int(value)
-            
             val = max(ValidationService.OPACITY_MIN, 
                      min(ValidationService.OPACITY_MAX, val))
-            
             return (True, val, None)
-            
         except (ValueError, TypeError):
             if auto_fix:
-                return (False, ValidationService.OPACITY_DEFAULT, "Độ mờ không hợp lệ")
-            return (False, None, "Độ mờ phải là số 0-100")
+                return (False, ValidationService.OPACITY_DEFAULT, "Invalid opacity")
+            return (False, None, "Invalid opacity")
     
     @staticmethod
-    def validate_hex_color(value, auto_fix=True):
+    def validate_hex_color(value, auto_fix=True, lang="vi"):
         """Validate hex color code."""
         if not value:
             if auto_fix:
-                return (False, "#ff0000", "Màu không được để trống")
-            return (False, None, "Màu không được để trống")
+                return (False, "#ff0000", "Color cannot be empty")
+            return (False, None, "Color cannot be empty")
         
         color = value.strip()
-        
-        # Add # if missing
         if not color.startswith('#'):
             color = '#' + color
         
-        # Check format
         if len(color) != 7:
             if auto_fix:
-                return (False, "#ff0000", "Mã màu không hợp lệ")
-            return (False, None, "Mã màu phải có định dạng #RRGGBB")
+                return (False, "#ff0000", "Invalid hex color")
+            return (False, None, "Invalid hex color format #RRGGBB")
         
         try:
             int(color[1:], 16)
             return (True, color, None)
         except ValueError:
             if auto_fix:
-                return (False, "#ff0000", "Mã màu không hợp lệ")
-            return (False, None, "Mã màu chứa ký tự không hợp lệ")
+                return (False, "#ff0000", "Invalid hex characters")
+            return (False, None, "Invalid hex characters")
     
     # =========================================================================
-    # FILE VALIDATION
+    # FILE & PAIR VALIDATION
     # =========================================================================
     
     @staticmethod
-    def validate_excel_file(file_path):
+    def validate_excel_file(file_path, lang="vi"):
         """
-        Validate Excel file.
+        Validate Excel file readability and extension.
         
         Returns:
             Tuple (is_valid, error_message)
         """
         if not file_path:
-            return (False, "Đường dẫn file trống")
+            return (False, get_text("val_err_missing_new", lang))
         
         if not os.path.exists(file_path):
-            return (False, f"File không tồn tại: {file_path}")
+            return (False, get_text("val_err_file_not_found", lang, file_path=file_path))
         
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in ('.xlsx', '.xls', '.xlsm'):
-            return (False, f"File không phải Excel: {ext}")
+            return (False, get_text("val_err_not_excel", lang, ext=ext))
         
         # Check if file is readable
         try:
@@ -219,12 +214,12 @@ class ValidationService:
                 _ = f.read(1)
             return (True, None)
         except PermissionError:
-            return (False, f"Không có quyền đọc file: {file_path}")
+            return (False, get_text("val_err_permission", lang, file_path=file_path))
         except Exception as e:
-            return (False, f"Lỗi đọc file: {e}")
+            return (False, f"{get_text('error', lang)}: {e}")
     
     @staticmethod
-    def validate_file_pairs(new_files, old_files):
+    def validate_file_pairs(new_files, old_files, lang="vi"):
         """
         Validate file pairs for comparison.
         
@@ -232,23 +227,23 @@ class ValidationService:
             Tuple (is_valid, error_message)
         """
         if not new_files:
-            return (False, "Chưa chọn file CTTT mới")
+            return (False, get_text("val_err_missing_new", lang))
         
         if not old_files:
-            return (False, "Chưa chọn file CTTT cũ")
+            return (False, get_text("val_err_missing_old", lang))
         
         if len(new_files) != len(old_files):
-            return (False, f"Số file không khớp: {len(new_files)} mới vs {len(old_files)} cũ")
+            return (False, get_text("workflow_err_mismatch", lang, new_count=len(new_files), old_count=len(old_files)))
         
         # Validate each file
         for i, (new_f, old_f) in enumerate(zip(new_files, old_files)):
-            valid, err = ValidationService.validate_excel_file(new_f)
+            valid, err = ValidationService.validate_excel_file(new_f, lang=lang)
             if not valid:
-                return (False, f"Cặp {i+1} - File mới lỗi: {err}")
+                return (False, f"Pair {i+1} [New SOP]: {err}")
             
-            valid, err = ValidationService.validate_excel_file(old_f)
+            valid, err = ValidationService.validate_excel_file(old_f, lang=lang)
             if not valid:
-                return (False, f"Cặp {i+1} - File cũ lỗi: {err}")
+                return (False, f"Pair {i+1} [Old SOP]: {err}")
         
         return (True, None)
 
@@ -299,8 +294,7 @@ class ValidationService:
                     )
                     if tab_color is not None and tab_color.attrib.get("rgb"):
                         rgb = tab_color.attrib["rgb"][-6:].upper()
-                    # Keep the fast-path behaviour aligned with Excel's UsedRange
-                    # check: do not compare a merely visible, empty worksheet.
+                    # Keep fast-path behaviour aligned with Excel's UsedRange
                     has_content = worksheet_xml.find(
                         f".//{{{spreadsheet_ns}}}sheetData/{{{spreadsheet_ns}}}row/{{{spreadsheet_ns}}}c"
                     ) is not None
@@ -314,9 +308,9 @@ class ValidationService:
             return sheets
 
     @staticmethod
-    def validate_document_mode(new_files, old_files, doc_mode):
+    def validate_document_mode(new_files, old_files, doc_mode, lang="vi"):
         """Ensure selected workbooks structurally match the requested comparison mode."""
-        valid_pairs, pair_error = ValidationService.validate_file_pairs(new_files, old_files)
+        valid_pairs, pair_error = ValidationService.validate_file_pairs(new_files, old_files, lang=lang)
         if not valid_pairs:
             return False, pair_error
 
@@ -331,12 +325,11 @@ class ValidationService:
                 old_sheets = ValidationService._inspect_workbook(old_path)
             except Exception as error:
                 errors.append(
-                    f"Cặp {pair_index}: không thể đọc cấu trúc workbook ({error})."
+                    get_text("val_err_pair_read_structure", lang, pair_index=pair_index, error=str(error))
                 )
                 continue
 
-            # Legacy .xls cannot be inspected safely without launching Excel; let the
-            # existing COM workflow validate those files later.
+            # Legacy .xls cannot be inspected safely without launching Excel
             if new_sheets is None or old_sheets is None:
                 continue
 
@@ -348,13 +341,12 @@ class ValidationService:
             if doc_mode == config.DOC_MODE_DUKC_OTHER:
                 missing = []
                 if "form" not in new_names:
-                    missing.append(f"file mới '{new_label}'")
+                    missing.append(f"'{new_label}'")
                 if "form" not in old_names:
-                    missing.append(f"file cũ '{old_label}'")
+                    missing.append(f"'{old_label}'")
                 if missing:
                     errors.append(
-                        f"Cặp {pair_index}: chế độ 'Tờ Phát Hành DUKC & Khác' yêu cầu "
-                        f"sheet 'Form', nhưng không tìm thấy trong {', '.join(missing)}."
+                        get_text("val_err_dukc_missing_form", lang, pair_index=pair_index, missing=', '.join(missing))
                     )
 
             elif doc_mode == config.DOC_MODE_STANDARD_CTTT:
@@ -368,22 +360,19 @@ class ValidationService:
                 }
                 if "form" in new_names and "form" in old_names:
                     errors.append(
-                        f"Cặp {pair_index}: cả hai file có sheet 'Form', không phù hợp với "
-                        "'CTTT thông thường'. Hãy chọn 'Tờ Phát Hành DUKC & Khác'."
+                        get_text("val_err_standard_has_form", lang, pair_index=pair_index)
                     )
                 elif not new_green:
                     suggestion = (
-                        " File có sheet 'Form'; hãy chọn loại 'Tờ Phát Hành DUKC & Khác'."
+                        get_text("val_suggestion_has_form", lang)
                         if "form" in new_names else ""
                     )
                     errors.append(
-                        f"Cặp {pair_index}: file mới '{new_label}' không có sheet tab xanh "
-                        f"dành cho CTTT tiêu chuẩn.{suggestion}"
+                        get_text("val_err_standard_no_green", lang, pair_index=pair_index, new_label=new_label, suggestion=suggestion)
                     )
                 elif not (new_green & old_green):
                     errors.append(
-                        f"Cặp {pair_index}: không có sheet tab xanh trùng tên giữa "
-                        f"'{new_label}' và '{old_label}'."
+                        get_text("val_err_standard_no_common_green", lang, pair_index=pair_index, new_label=new_label, old_label=old_label)
                     )
 
             elif doc_mode == config.DOC_MODE_DUKC_CTTT:
@@ -395,30 +384,28 @@ class ValidationService:
                 }
                 if "form" in new_names and "form" in old_names:
                     errors.append(
-                        f"Cặp {pair_index}: cả hai file có sheet 'Form'. Có thể bạn đã chọn "
-                        "nhầm loại; hãy dùng 'Tờ Phát Hành DUKC & Khác'."
+                        get_text("val_err_dukc_cttt_has_form", lang, pair_index=pair_index)
                     )
                 elif not (visible_new & visible_old):
                     errors.append(
-                        f"Cặp {pair_index}: không có sheet hiển thị trùng tên giữa "
-                        f"'{new_label}' và '{old_label}'."
+                        get_text("val_err_dukc_cttt_no_common_visible", lang, pair_index=pair_index, new_label=new_label, old_label=old_label)
                     )
 
         if errors:
-            return False, "Loại tài liệu đã chọn không phù hợp:\n\n" + "\n".join(errors)
+            header = get_text("val_header_incompatible_mode", lang)
+            return False, header + "\n".join(errors)
         return True, None
     
     @staticmethod
-    def validate_output_folder(folder_path):
+    def validate_output_folder(folder_path, lang="vi"):
         """Validate output folder."""
         if not folder_path:
-            return (True, None)  # Empty is OK, will use default
+            return (True, None)
         
         if os.path.exists(folder_path):
             if not os.path.isdir(folder_path):
-                return (False, "Đường dẫn không phải thư mục")
+                return (False, get_text("folder_not_found_msg", lang))
             
-            # Check write permission
             try:
                 test_file = os.path.join(folder_path, ".test_write")
                 with open(test_file, 'w', encoding='utf-8') as f:
@@ -426,25 +413,19 @@ class ValidationService:
                 os.remove(test_file)
                 return (True, None)
             except Exception:
-                return (False, "Không có quyền ghi vào thư mục này")
+                return (False, get_text("val_err_permission", lang, file_path=folder_path))
         else:
-            # Try to create
             try:
                 os.makedirs(folder_path, exist_ok=True)
                 return (True, None)
-            except Exception:
-                return (False, "Không thể tạo thư mục")
+            except Exception as e:
+                return (False, f"{get_text('error', lang)}: {e}")
 
 
 class MessageHandler:
     """Handler cho message boxes với suppression support."""
     
     def __init__(self, suppress=False, status_callback=None):
-        """
-        Args:
-            suppress: Nếu True, không hiển thị popup, chỉ log
-            status_callback: Function(text) để cập nhật status
-        """
         self.suppress = suppress
         self.status_callback = status_callback
     
@@ -479,7 +460,7 @@ class MessageHandler:
         """Ask yes/no question."""
         if self.suppress:
             utils.logger.info(f"[SUPPRESSED ASK] {title}: {message} -> Auto: Yes")
-            return True  # Auto-answer Yes when suppressed
+            return True
         else:
             return messagebox.askyesno(title, message)
     
