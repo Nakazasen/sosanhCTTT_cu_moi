@@ -45,32 +45,32 @@
 
 ```mermaid
 graph TD
-    A[main.py] --> B[ui/main_window_modern.py]
-    B --> C[core/comparator.py]
+    A["main.py"] --> B["ui/main_window_modern.py"]
+    B --> C["core/comparator.py"]
     
     subgraph "Core Business Logic"
-        C --> D[Strategy A: PDF Workflow]
-        C --> E[Strategy B: Legacy Screenshot Workflow]
+        C --> D["Strategy A: PDF Workflow"]
+        C --> E["Strategy B: Legacy Screenshot Workflow"]
     end
     
     subgraph "Service Layer"
-        D --> F[services/pdf_service.py]
-        D --> G[services/optimized_image_compare.py]
-        E --> H[services/legacy_screenshot_service.py]
+        D --> F["services/pdf_service.py"]
+        D --> G["services/optimized_image_compare.py"]
+        E --> H["services/legacy_screenshot_service.py"]
         E --> G
-        C --> I[services/excel_service.py]
-        C --> J[services/report_service.py]
-        C --> K[services/cleanup_service.py]
-        B --> L[services/settings_service.py]
-        B --> M[services/update_service.py]
-        B --> N[services/release_update_service.py]
-        B --> O[services/validation_service.py]
+        C --> I["services/excel_service.py"]
+        C --> J["services/report_service.py"]
+        C --> K["services/cleanup_service.py"]
+        B --> L["services/settings_service.py"]
+        B --> M["services/update_service.py"]
+        B --> N["services/release_update_service.py"]
+        B --> O["services/validation_service.py"]
     end
 
     subgraph "UI & Localization"
-        B --> P[ui/translations.py (VI/EN/ZH/JA)]
-        B --> Q[ui/modern_style.py]
-        B --> R[ui/help_window.py]
+        B --> P["ui/translations.py (VI/EN/ZH/JA)"]
+        B --> Q["ui/modern_style.py"]
+        B --> R["ui/help_window.py"]
     end
 ```
 
