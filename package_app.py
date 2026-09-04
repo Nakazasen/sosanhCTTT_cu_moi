@@ -15,14 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 ARTIFACTS = ROOT / "release_artifacts"
 BUNDLE = ARTIFACTS / "install_bundle"
-PUBLISH_DIR = Path(r"\\fstvn01\Data\10_Production Engineering Department(\u88fd\u9020\u6280\u8853\u90e8)\02.\u88fd\u9020\u6280\u8853\u8ab2\PE Dept\15. FORM\uff08BIEU MAU\uff09-\u5f62\u5f0f\Form_VBA\Form_Phanmem_sosanhCTTT")
-UPDATE_DIR = PUBLISH_DIR / "release_update"
-
-# Use a Windows UNC path with forward separators so the non-ASCII share names
-# remain readable and are not accidentally treated as literal ``\\uXXXX`` text.
 PUBLISH_DIR = Path("//fstvn01/Data/10_Production Engineering Department(製造技術部)/02.製造技術課/PE Dept/15. FORM（BIEU MAU）-形式/Form_VBA/Form_Phanmem_sosanhCTTT")
 UPDATE_DIR = PUBLISH_DIR / "release_update"
-
 
 def release() -> dict:
     value = json.loads((ROOT / "release.json").read_text(encoding="utf-8-sig"))

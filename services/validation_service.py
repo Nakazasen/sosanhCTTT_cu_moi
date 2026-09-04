@@ -308,8 +308,21 @@ class ValidationService:
             return sheets
 
     @staticmethod
-    def validate_document_mode(new_files, old_files, doc_mode, lang="vi"):
+    def validate_document_mode(new_files, old_files, doc_mode, settings=None, lang="vi"):
         """Ensure selected workbooks structurally match the requested comparison mode."""
+        if doc_mode == config.DOC_MODE_CUSTOM:
+            settings = settings or {}
+            print_area = settings.get(config.KEY_CUSTOM_PRINT_AREA, "").strip()
+            if not print_area:
+                return False, "Chế độ tùy chỉnh: Vui lòng nhập phạm vi so sánh (ví dụ: A1:Z100)."
+            sheet_mode = settings.get(config.KEY_CUSTOM_SHEET_MODE, config.CUSTOM_SHEET_MODE_ALL)
+            if sheet_mode == config.CUSTOM_SHEET_MODE_SPECIFIED:
+                spec = settings.get(config.KEY_CUSTOM_SPECIFIED_SHEETS, "").strip()
+                if not spec:
+                    return False, "Chế độ tùy chỉnh: Vui lòng nhập ít nhất một tên sheet cần so sánh."
+            if not new_files and not old_files:
+                return True, None
+
         valid_pairs, pair_error = ValidationService.validate_file_pairs(new_files, old_files, lang=lang)
         if not valid_pairs:
             return False, pair_error
@@ -354,10 +367,6 @@ class ValidationService:
                     item["name"].strip().lower()
                     for item in new_sheets if item["tab_rgb"] == expected_green
                 }
-                old_green = {
-                    item["name"].strip().lower()
-                    for item in old_sheets if item["tab_rgb"] == expected_green
-                }
                 if "form" in new_names and "form" in old_names:
                     errors.append(
                         get_text("val_err_standard_has_form", lang, pair_index=pair_index)
@@ -370,7 +379,10 @@ class ValidationService:
                     errors.append(
                         get_text("val_err_standard_no_green", lang, pair_index=pair_index, new_label=new_label, suggestion=suggestion)
                     )
-                elif not (new_green & old_green):
+                else:
+                    missing_in_old = sorted(new_green - old_names)
+                    if not missing_in_old:
+                        continue
                     errors.append(
                         get_text("val_err_standard_no_common_green", lang, pair_index=pair_index, new_label=new_label, old_label=old_label)
                     )
@@ -390,6 +402,47 @@ class ValidationService:
                     errors.append(
                         get_text("val_err_dukc_cttt_no_common_visible", lang, pair_index=pair_index, new_label=new_label, old_label=old_label)
                     )
+
+            elif doc_mode == config.DOC_MODE_CUSTOM:
+                # Custom mode validation
+                custom_sheet_mode = (settings or {}).get("custom_sheet_mode", config.CUSTOM_SHEET_MODE_ALL) if settings else config.CUSTOM_SHEET_MODE_ALL
+                custom_specified_sheets = (settings or {}).get("custom_specified_sheets", "") if settings else ""
+                custom_only_green = (settings or {}).get("custom_only_green", False) if settings else False
+
+                if custom_sheet_mode == config.CUSTOM_SHEET_MODE_SPECIFIED and custom_specified_sheets.strip():
+                    req_sheets = {s.strip().lower() for s in custom_specified_sheets.split(",") if s.strip()}
+                    matching_in_both = req_sheets & new_names & old_names
+                    if not matching_in_both:
+                        errors.append(
+                            f"Cặp {pair_index}: không tìm thấy sheet chỉ định nào ({', '.join(req_sheets)}) "
+                            f"đồng thời có trong cả 2 file '{new_label}' và '{old_label}'."
+                        )
+                elif custom_only_green:
+                    new_green = {
+                        item["name"].strip().lower()
+                        for item in new_sheets if item["tab_rgb"] == expected_green
+                    }
+                    old_green = {
+                        item["name"].strip().lower()
+                        for item in old_sheets if item["tab_rgb"] == expected_green
+                    }
+                    if not (new_green & old_green):
+                        errors.append(
+                            f"Cặp {pair_index}: không có sheet tab xanh trùng tên giữa "
+                            f"'{new_label}' và '{old_label}'."
+                        )
+                else:
+                    visible_new = {
+                        item["name"].strip().lower() for item in new_sheets if item["visible"]
+                    }
+                    visible_old = {
+                        item["name"].strip().lower() for item in old_sheets if item["visible"]
+                    }
+                    if not (visible_new & visible_old):
+                        errors.append(
+                            f"Cặp {pair_index}: không có sheet hiển thị trùng tên giữa "
+                            f"'{new_label}' và '{old_label}'."
+                        )
 
         if errors:
             header = get_text("val_header_incompatible_mode", lang)

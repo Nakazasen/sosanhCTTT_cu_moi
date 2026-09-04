@@ -52,7 +52,11 @@ class SettingsService:
             "screen_mode": "pc",
             "goto_address": config.DEFAULT_GOTO_ADDRESS,
             "doc_mode": config.DOC_MODE_STANDARD_CTTT,
-            "print_area": config.PRINT_AREA_STANDARD_CTTT
+            "print_area": config.PRINT_AREA_STANDARD_CTTT,
+            "custom_print_area": config.DEFAULT_CUSTOM_PRINT_AREA,
+            "custom_sheet_mode": config.CUSTOM_SHEET_MODE_ALL,
+            "custom_specified_sheets": "",
+            "custom_only_green": False
         }
 
         if os.path.exists(self.settings_file):

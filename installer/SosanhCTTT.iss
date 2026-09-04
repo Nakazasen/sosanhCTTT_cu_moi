@@ -1,6 +1,6 @@
 ; Inno Setup 6 script.  AppId must remain unchanged between releases.
 #define AppName "So sanh CTTT"
-#define AppVersion "7.4.1"
+#define AppVersion "7.4.0"
 #define AppPublisher "PE Dept"
 #define AppId "{{B655CBC7-65DB-4DFD-BEDB-8B8E14822DD8}}"
 #define BundleDir "..\release_artifacts\install_bundle"

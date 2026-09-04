@@ -65,6 +65,171 @@ class ToolTip:
             tw.destroy()
 
 
+class CustomModeConfigDialog(tk.Toplevel):
+    """
+    Hộp thoại cấu hình tùy chỉnh cho '4. Tài liệu do người dùng chọn'
+    2.1. Phạm vi so sánh (Vùng từ bao nhiêu đến bao nhiêu)
+    2.2. Toàn bộ sheet hay sheet chỉ định (+ lọc tab màu xanh)
+    """
+    def __init__(self, parent, settings_service, current_lang="vi", on_save_callback=None):
+        super().__init__(parent)
+        self.settings_service = settings_service
+        self.current_lang = current_lang
+        self.on_save_callback = on_save_callback
+
+        self.title(get_text("custom_dialog_title", self.current_lang))
+        self.geometry("540x470")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        # Load current settings
+        cur_settings = self.settings_service.settings if self.settings_service else {}
+        self.range_var = tk.StringVar(value=cur_settings.get(config.KEY_CUSTOM_PRINT_AREA, config.DEFAULT_CUSTOM_PRINT_AREA))
+        self.sheet_mode_var = tk.StringVar(value=cur_settings.get(config.KEY_CUSTOM_SHEET_MODE, config.CUSTOM_SHEET_MODE_ALL))
+        self.specified_sheets_var = tk.StringVar(value=cur_settings.get(config.KEY_CUSTOM_SPECIFIED_SHEETS, ""))
+        self.only_green_var = tk.BooleanVar(value=cur_settings.get(config.KEY_CUSTOM_ONLY_GREEN, False))
+
+        self._build_ui()
+        self._center_window(parent)
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=Spacing.LG)
+        container.pack(fill="both", expand=True)
+
+        # --- GROUP 1: Phạm vi so sánh (Range) ---
+        grp_range = ttk.LabelFrame(container, text=f"  {get_text('custom_range_group', self.current_lang)}  ", padding=Spacing.MD)
+        grp_range.pack(fill="x", pady=(0, Spacing.MD))
+
+        row1 = ttk.Frame(grp_range)
+        row1.pack(fill="x", pady=(0, Spacing.XS))
+
+        ttk.Label(row1, text="Print Area:", font=Fonts.get("base", "bold")).pack(side="left", padx=(0, Spacing.SM))
+        entry_range = ttk.Entry(row1, textvariable=self.range_var, width=28)
+        entry_range.pack(side="left", fill="x", expand=True)
+
+        ttk.Label(grp_range, text=get_text("custom_range_hint", self.current_lang), style="Muted.TLabel").pack(anchor="w", pady=(0, Spacing.SM))
+
+        # Presets
+        row_presets = ttk.Frame(grp_range)
+        row_presets.pack(fill="x")
+        ttk.Label(row_presets, text=f"{get_text('custom_presets_label', self.current_lang)}:").pack(side="left", padx=(0, Spacing.XS))
+
+        presets = [
+            ("A1:AT120", "A1:AT120"),
+            ("EX1:GR76", "EX1:GR76"),
+            ("J2:BD76", "J2:BD76"),
+            ("A1:Z50", "A1:Z50"),
+            ("A1:ZZ500", "A1:ZZ500")
+        ]
+        for label, val in presets:
+            btn = ttk.Button(row_presets, text=label, width=9,
+                             command=lambda v=val: self.range_var.set(v))
+            btn.pack(side="left", padx=2)
+
+        # --- GROUP 2: Phạm vi Sheet ---
+        grp_sheets = ttk.LabelFrame(container, text=f"  {get_text('custom_sheet_group', self.current_lang)}  ", padding=Spacing.MD)
+        grp_sheets.pack(fill="x", pady=(0, Spacing.MD))
+
+        rb_all = ttk.Radiobutton(
+            grp_sheets,
+            text=get_text("custom_sheet_all", self.current_lang),
+            variable=self.sheet_mode_var,
+            value=config.CUSTOM_SHEET_MODE_ALL,
+            command=self._on_sheet_mode_toggle
+        )
+        rb_all.pack(anchor="w", pady=(0, Spacing.XS))
+
+        rb_spec = ttk.Radiobutton(
+            grp_sheets,
+            text=get_text("custom_sheet_specified", self.current_lang),
+            variable=self.sheet_mode_var,
+            value=config.CUSTOM_SHEET_MODE_SPECIFIED,
+            command=self._on_sheet_mode_toggle
+        )
+        rb_spec.pack(anchor="w", pady=(0, Spacing.XS))
+
+        self.entry_spec_sheets = ttk.Entry(
+            grp_sheets,
+            textvariable=self.specified_sheets_var,
+            width=45
+        )
+        self.entry_spec_sheets.pack(fill="x", padx=(Spacing.LG, 0), pady=(0, Spacing.SM))
+
+        chk_green = ttk.Checkbutton(
+            grp_sheets,
+            text=get_text("custom_only_green", self.current_lang),
+            variable=self.only_green_var
+        )
+        chk_green.pack(anchor="w", pady=(Spacing.XS, 0))
+
+        self._on_sheet_mode_toggle()
+
+        # --- BUTTONS ---
+        btn_frame = ttk.Frame(container)
+        btn_frame.pack(fill="x", side="bottom", pady=(Spacing.SM, 0))
+
+        btn_save = ttk.Button(
+            btn_frame,
+            text=f"💾 {get_text('btn_save_apply', self.current_lang)}",
+            style="Primary.TButton",
+            command=self._on_save
+        )
+        btn_save.pack(side="right", padx=(Spacing.SM, 0))
+
+        btn_cancel = ttk.Button(
+            btn_frame,
+            text=get_text("cancel", self.current_lang),
+            style="Secondary.TButton",
+            command=self.destroy
+        )
+        btn_cancel.pack(side="right")
+
+    def _on_sheet_mode_toggle(self):
+        if self.sheet_mode_var.get() == config.CUSTOM_SHEET_MODE_SPECIFIED:
+            self.entry_spec_sheets.config(state="normal")
+        else:
+            self.entry_spec_sheets.config(state="disabled")
+
+    def _center_window(self, parent):
+        self.update_idletasks()
+        try:
+            p_x = parent.winfo_rootx()
+            p_y = parent.winfo_rooty()
+            p_w = parent.winfo_width()
+            p_h = parent.winfo_height()
+            w = self.winfo_width()
+            h = self.winfo_height()
+            x = p_x + max(0, (p_w - w) // 2)
+            y = p_y + max(0, (p_h - h) // 2)
+            self.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+    def _on_save(self):
+        area = self.range_var.get().strip().upper()
+        if not area:
+            area = config.DEFAULT_CUSTOM_PRINT_AREA
+
+        sheet_mode = self.sheet_mode_var.get()
+        spec_sheets = self.specified_sheets_var.get().strip()
+        only_green = self.only_green_var.get()
+
+        updated_settings = {
+            config.KEY_CUSTOM_PRINT_AREA: area,
+            config.KEY_CUSTOM_SHEET_MODE: sheet_mode,
+            config.KEY_CUSTOM_SPECIFIED_SHEETS: spec_sheets,
+            config.KEY_CUSTOM_ONLY_GREEN: only_green,
+        }
+        if self.settings_service:
+            self.settings_service.save_settings(updated_settings)
+
+        if self.on_save_callback:
+            self.on_save_callback(updated_settings)
+
+        self.destroy()
+
+
 class MainWindow:
     def __init__(self, master):
         self.master = master
@@ -244,6 +409,144 @@ class MainWindow:
         # ==================== CARD 1: FILE SELECTION ====================
         self.file_card = ttk.LabelFrame(content, text=get_text("card_file_selection", self.current_lang), style="Card.TLabelframe", padding=Spacing.LG)
         self.file_card.grid(row=row, column=0, sticky="ew", pady=(0, Spacing.MD)); row += 1
+
+        # Highlight Colors
+        self.highlight_base_color = self.settings.get("highlight_base_color", config.HIGHLIGHT_BASE_COLOR)
+        self.highlight_outline_color = self.settings.get("highlight_outline_color", config.HIGHLIGHT_OUTLINE_COLOR)
+        self.highlight_fill_color = self.settings.get("highlight_fill_color", config.HIGHLIGHT_FILL_COLOR)
+
+        # Highlight Settings
+        self.highlight_fill_opacity = tk.IntVar(value=self.settings.get("highlight_fill_opacity", config.DEFAULT_FILL_OPACITY))
+        self.pdf_diff_threshold = tk.IntVar(value=self.settings.get("pdf_diff_threshold", config.DEFAULT_DIFF_THRESHOLD))
+        self.pdf_dilate_size = tk.IntVar(value=self.settings.get("pdf_dilate_size", config.DEFAULT_DILATE_SIZE))
+        self.pdf_dilate_iterations = tk.IntVar(value=self.settings.get("pdf_dilate_iterations", config.DEFAULT_DILATE_ITERATIONS))
+
+        # Screen Mode
+        self.screen_mode = tk.StringVar(value=self.settings.get("screen_mode", "pc"))
+
+        # Progress Bar references
+        self.progress_bar = None
+        self.progress_label = None
+
+        # Legacy compatibility
+        self.bg_color = self.highlight_base_color
+        self.outline_color = self.highlight_outline_color
+
+        # Lists
+        self.new_files = []
+        self.old_files = []
+
+        # Language Settings
+        self.current_lang = self.settings.get("language", "vi")
+
+        # Widget references for language updates
+        self.translatable_widgets = {}
+
+    def create_widgets(self):
+        # ========== MODERN STYLE CONFIGURATION ==========
+        configure_styles(self.master)
+
+        # Window Configuration
+        self.master.geometry("1100x750")
+        self.master.configure(bg=Colors.BG_MAIN)
+        self.master.minsize(900, 600)
+
+        # ========== MENU BAR ==========
+        self.create_menu_bar()
+
+        # ========== KEYBOARD SHORTCUTS ==========
+        self.bind_shortcuts()
+
+        # ========== MAIN CONTAINER ==========
+        main_container = ttk.Frame(self.master, style="TFrame")
+        main_container.pack(fill="both", expand=True, padx=Spacing.LG, pady=Spacing.MD)
+
+        main_container.grid_columnconfigure(0, weight=1)
+        main_container.grid_rowconfigure(1, weight=1)
+
+        # ========== HEADER ==========
+        header_frame = ttk.Frame(main_container, style="TFrame")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, Spacing.MD))
+
+        title_label = ttk.Label(
+            header_frame,
+            text=get_text("app_title", self.current_lang) if self.current_lang != "vi" else "📊 So sánh Chỉ thị Thao tác",
+            style="Header.TLabel"
+        )
+        title_label.pack(side="left")
+        self.translatable_widgets["title"] = title_label
+
+        # LANGUAGE SELECTOR
+        lang_frame = ttk.Frame(header_frame, style="TFrame")
+        lang_frame.pack(side="right", padx=(0, Spacing.MD))
+
+        ttk.Label(lang_frame, text="🌐", font=("Arial", 12)).pack(side="left", padx=(0, 4))
+
+        self.lang_combo = ttk.Combobox(
+            lang_frame,
+            values=list(LANGUAGES.values()),
+            state="readonly",
+            width=12
+        )
+        # Set current language in combo
+        lang_codes = list(LANGUAGES.keys())
+        lang_names = list(LANGUAGES.values())
+        if self.current_lang in lang_codes:
+            self.lang_combo.current(lang_codes.index(self.current_lang))
+        else:
+            self.lang_combo.current(0)
+        self.lang_combo.pack(side="left")
+        self.lang_combo.bind("<<ComboboxSelected>>", self.on_language_change)
+
+        help_btn = ttk.Button(
+            header_frame,
+            text=get_text("btn_help", self.current_lang) if self.current_lang != "vi" else "📖 Hướng dẫn",
+            command=self.show_help,
+            style="Secondary.TButton"
+        )
+        help_btn.pack(side="right")
+        self.translatable_widgets["help_btn"] = help_btn
+
+        # ========== CONTENT (Scrollable) ==========
+        self.canvas = tk.Canvas(main_container, bg=Colors.BG_MAIN, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas, style="TFrame")
+
+        # Tạo window trong canvas và lưu ID
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+
+        def _on_frame_configure(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            # Ẩn scrollbar nếu nội dung không cần cuộn
+            if self.scrollable_frame.winfo_reqheight() <= self.canvas.winfo_height():
+                self.scrollbar.grid_remove()
+            else:
+                self.scrollbar.grid()
+
+        def _on_canvas_configure(event):
+            # Mở rộng scrollable_frame chiếm hết chiều ngang canvas
+            self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+        self.scrollable_frame.bind("<Configure>", _on_frame_configure)
+        self.canvas.bind("<Configure>", _on_canvas_configure)
+
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # Mouse wheel
+        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        self.canvas.grid(row=1, column=0, sticky="nsew")
+        self.scrollbar.grid(row=1, column=1, sticky="ns")
+        self.scrollbar.grid_remove()  # Ẩn mặc định, sẽ hiện khi cần
+
+        content = self.scrollable_frame
+        content.grid_columnconfigure(0, weight=1)
+
+        row = 0
+
+        # ==================== CARD 1: FILE SELECTION ====================
+        self.file_card = ttk.LabelFrame(content, text="  📁 Chọn Files CTTT  ", style="Card.TLabelframe", padding=Spacing.LG)
+        self.file_card.grid(row=row, column=0, sticky="ew", pady=(0, Spacing.MD)); row += 1
         self.file_card.grid_columnconfigure(1, weight=1)
         self.file_card.grid_columnconfigure(3, weight=1)
         
@@ -257,14 +560,24 @@ class MainWindow:
             values=[
                 get_text("mode_standard_cttt", self.current_lang),
                 get_text("mode_dukc_cttt", self.current_lang),
-                get_text("mode_dukc_other", self.current_lang)
+                get_text("mode_dukc_other", self.current_lang),
+                get_text("mode_custom", self.current_lang)
             ],
             state="readonly", 
-            width=56
+            width=54
         )
         self.doc_mode_combo.set("")
-        self.doc_mode_combo.pack(side="left", padx=(0, Spacing.LG))
+        self.doc_mode_combo.pack(side="left", padx=(0, Spacing.XS))
         self.doc_mode_combo.bind("<<ComboboxSelected>>", self.on_doc_mode_change)
+
+        self.btn_custom_config = ttk.Button(
+            mode_frame,
+            text=f"⚙️ {get_text('btn_custom_config', self.current_lang)}",
+            command=self.open_custom_config_dialog,
+            style="Secondary.TButton",
+            state="disabled",
+        )
+        self.btn_custom_config.pack(side="left", padx=(0, Spacing.LG))
 
         self.lbl_screen_mode = ttk.Label(mode_frame, text=get_text("screen_mode_label", self.current_lang))
         self.lbl_screen_mode.pack(side="left", padx=(0, Spacing.SM))
@@ -281,7 +594,6 @@ class MainWindow:
         self.screen_combo.current(0)
         self.screen_combo.pack(side="left")
         self.screen_combo.bind("<<ComboboxSelected>>", self.on_screen_mode_change)
-        
         # New Files
         self.lbl_cttt_new = ttk.Label(self.file_card, text=get_text("lbl_cttt_new", self.current_lang))
         self.lbl_cttt_new.grid(row=1, column=0, sticky="w", padx=Spacing.SM)
@@ -453,16 +765,49 @@ class MainWindow:
             self._invalidate_pair_confirmation()
             return
         self.doc_mode_selected = True
+        if hasattr(self, "btn_custom_config"):
+            self.btn_custom_config.config(state="normal" if idx == 3 else "disabled")
         if idx == 1:
             self.doc_mode_var.set(config.DOC_MODE_DUKC_CTTT)
             self.print_area_var.set(config.PRINT_AREA_DUKC_CTTT)
         elif idx == 2:
             self.doc_mode_var.set(config.DOC_MODE_DUKC_OTHER)
             self.print_area_var.set(config.PRINT_AREA_DUKC_OTHER)
+        elif idx == 3:
+            self.doc_mode_var.set(config.DOC_MODE_CUSTOM)
+            cur_area = (self.settings.get(config.KEY_CUSTOM_PRINT_AREA) if self.settings else None) or config.DEFAULT_CUSTOM_PRINT_AREA
+            self.print_area_var.set(cur_area)
+            self.open_custom_config_dialog()
         else:
             self.doc_mode_var.set(config.DOC_MODE_STANDARD_CTTT)
             self.print_area_var.set(config.PRINT_AREA_STANDARD_CTTT)
         self._invalidate_pair_confirmation()
+
+    def open_custom_config_dialog(self):
+        """Mở hộp thoại cấu hình cho chế độ 4: Tùy chỉnh vùng và sheet."""
+        def on_save_callback(updated_settings):
+            self.settings = self.settings_service.settings
+            new_area = updated_settings.get(config.KEY_CUSTOM_PRINT_AREA, config.DEFAULT_CUSTOM_PRINT_AREA)
+            self.print_area_var.set(new_area)
+            self.update_status(f"Đã cập nhật chế độ Tùy chỉnh: Vùng {new_area}")
+
+        CustomModeConfigDialog(
+            self.master,
+            self.settings_service,
+            self.current_lang,
+            on_save_callback,
+        )
+
+    def validate_dpi_input(self, event=None):
+        """Validate và tự động điều chỉnh DPI input."""
+        try:
+            val = int(self.pdf_render_dpi.get())
+            if val < ValidationService.DPI_MIN:
+                self.pdf_render_dpi.set(ValidationService.DPI_MIN)
+            elif val > ValidationService.DPI_MAX:
+                self.pdf_render_dpi.set(ValidationService.DPI_MAX)
+        except Exception:
+            self.pdf_render_dpi.set(ValidationService.DPI_DEFAULT)
 
     def _invalidate_pair_confirmation(self):
         """Require confirmation again whenever inputs or document type change."""
@@ -599,6 +944,7 @@ class MainWindow:
             self.new_files,
             self.old_files,
             self.doc_mode_var.get(),
+            settings=self.settings,
             lang=self.current_lang
         )
         if is_valid:
@@ -750,6 +1096,61 @@ class MainWindow:
             return
         self.show_confirmation_dialog()
 
+    def _show_confirmation_dialog_partial(self):
+        """Hiển thị hộp thoại xác nhận thứ tự các cặp file CTTT để người dùng kiểm tra, bổ sung và sắp xếp lại"""
+        lang = self.current_lang
+
+        if not self.new_files and not self.old_files:
+            warning_titles = {"vi": "Chưa chọn file", "en": "No files selected", "zh": "未选择文件", "ja": "ファイル未選択"}
+            missing_files_msgs = {
+                "vi": "Bạn cần chọn file CTTT trước khi kiểm tra.",
+                "en": "Please select CTTT files before checking.",
+                "zh": "请先选择CTTT文件再进行检查。",
+                "ja": "確認する前にCTTTファイルを選択してください。"
+            }
+            messagebox.showwarning(warning_titles.get(lang, warning_titles["vi"]), missing_files_msgs.get(lang, missing_files_msgs["vi"]), parent=self.master)
+            return
+
+        # Dialog texts
+        dialog_titles = {"vi": "🔍 Kiểm tra & Sắp xếp các cặp CTTT", "en": "🔍 Check & Reorder CTTT pairs", "zh": "🔍 检查并排序CTTT配对", "ja": "🔍 CTTTペアの確認と並べ替え"}
+        hint_texts = {"vi": "💡 Kéo thả từng dòng để đổi thứ tự đối ứng. Dùng nút '➕ Thêm' để chọn bổ sung nếu bị thiếu file!",
+                      "en": "💡 Drag & drop to reorder pairs. Use '➕ Add' to append missing files!",
+                      "zh": "💡 拖放以重新排序。使用 '➕ 添加' 按钮补充缺少的文件！",
+                      "ja": "💡 ドラッグ＆ドロップで並べ替え。'➕ 追加' ボタンで不足ファイルを追加できます！"}
+        confirm_btn_texts = {"vi": "✅ Xác nhận & Lưu", "en": "✅ Confirm & Save", "zh": "✅ 确认并保存", "ja": "✅ 確認して保存"}
+        delete_selected_texts = {"vi": "🗑️ Xóa cả 2 mục đang chọn", "en": "🗑️ Delete both selected", "zh": "🗑️ 删除两个选中项", "ja": "🗑️ 両方の選択項目を削除"}
+        close_btn_texts = {"vi": "❌ Đóng", "en": "❌ Close", "zh": "❌ 关闭", "ja": "❌ 閉じる"}
+        add_new_texts = {"vi": "➕ Thêm CTTT Mới", "en": "➕ Add New CTTT", "zh": "➕ 添加新CTTT", "ja": "➕ 新CTTT追加"}
+        add_old_texts = {"vi": "➕ Thêm CTTT Cũ", "en": "➕ Add Old CTTT", "zh": "➕ 添加旧CTTT", "ja": "➕ 旧CTTT追加"}
+        del_new_texts = {"vi": "🗑️ Xóa file chọn", "en": "🗑️ Delete selected", "zh": "🗑️ 删除选中项", "ja": "🗑️ 選択項目を削除"}
+        del_old_texts = {"vi": "🗑️ Xóa file chọn", "en": "🗑️ Delete selected", "zh": "🗑️ 删除选中项", "ja": "🗑️ 選択項目を削除"}
+
+        # Tạo cửa sổ con để hiển thị danh sách file
+        self.confirmation_window = tk.Toplevel(self.master)
+        self.confirmation_window.title(dialog_titles.get(lang, dialog_titles["vi"]))
+        self.confirmation_window.geometry("860x560")
+        self.confirmation_window.minsize(720, 460)
+        self.confirmation_window.configure(bg=Colors.BG_MAIN)
+        self.confirmation_window.transient(self.master)
+
+        # Khởi tạo drag data
+        self.drag_data = {}
+
+        # Header frame
+        header_frame = ttk.Frame(self.confirmation_window, padding=Spacing.SM)
+        header_frame.pack(fill="x", padx=Spacing.MD, pady=(Spacing.SM, 0))
+
+        lbl_hint = ttk.Label(header_frame, text=hint_texts.get(lang, hint_texts["vi"]), style="Subheader.TLabel", wraplength=820)
+        lbl_hint.pack(anchor="w")
+
+        # Match status label
+        self.lbl_match_status = tk.Label(header_frame, font=Fonts.get("base", "bold"), anchor="w", pady=4)
+        self.lbl_match_status.pack(fill="x")
+
+        # Tạo khung chứa 2 cột song song
+        listbox_frame = ttk.Frame(self.confirmation_window)
+        listbox_frame.pack(fill="both", expand=True, padx=Spacing.MD, pady=Spacing.SM)
+
     def show_confirmation_dialog(self):
         """Hiển thị hộp thoại xác nhận thứ tự các cặp file CTTT để người dùng kiểm tra, bổ sung và sắp xếp lại"""
         lang = self.current_lang
@@ -815,14 +1216,7 @@ class MainWindow:
             
         def _del_selected_new_file():
             sel = self.new_files_listbox.curselection()
-            idx = None
-            if sel and len(sel) > 0:
-                idx = sel[0]
-            else:
-                active = self.new_files_listbox.index(tk.ACTIVE)
-                if active is not None and 0 <= active < len(self.new_files):
-                    idx = active
-            
+            idx = sel[0] if sel else self.new_files_listbox.index(tk.ACTIVE)
             if idx is not None and 0 <= idx < len(self.new_files):
                 self.new_files.pop(idx)
                 self._invalidate_pair_confirmation()
@@ -973,7 +1367,6 @@ class MainWindow:
             target_list.insert(index, target_list.pop(old_index))
             self.drag_data["index"] = index
             self.drag_data["moved"] = True
-
     def on_drag_release(self, event):
         if self.drag_data.get("moved"):
             file_names_new = ', '.join([os.path.basename(f) for f in self.new_files])
@@ -1033,6 +1426,10 @@ class MainWindow:
             elif idx == 2:
                 self.doc_mode_var.set(config.DOC_MODE_DUKC_OTHER)
                 self.print_area_var.set(config.PRINT_AREA_DUKC_OTHER)
+            elif idx == 3:
+                self.doc_mode_var.set(config.DOC_MODE_CUSTOM)
+                cur_area = (self.settings.get(config.KEY_CUSTOM_PRINT_AREA) if self.settings else None) or config.DEFAULT_CUSTOM_PRINT_AREA
+                self.print_area_var.set(cur_area)
             else:
                 self.doc_mode_var.set(config.DOC_MODE_STANDARD_CTTT)
                 self.print_area_var.set(config.PRINT_AREA_STANDARD_CTTT)
@@ -1116,7 +1513,8 @@ class MainWindow:
     def _run_thread(self):
         lang = self.current_lang
         try:
-            settings = {
+            settings = dict(self.settings) if self.settings else {}
+            settings.update({
                 "dpi": self.pdf_render_dpi.get(),
                 "pdf_dpi": self.pdf_render_dpi.get(),
                 "zoom": self.zoom_var.get(),
@@ -1135,7 +1533,7 @@ class MainWindow:
                 "pdf_diff_threshold": self.pdf_diff_threshold.get(),
                 "pdf_dilate_size": self.pdf_dilate_size.get(),
                 "pdf_dilate_iterations": self.pdf_dilate_iterations.get(),
-            }
+            })
             
             self.comparator.use_pdf_method = self.use_pdf_method.get()
             
@@ -1183,7 +1581,6 @@ class MainWindow:
 
         if not self._validate_document_mode_selection():
             return
-
         lang = self.current_lang
         
         if not self.new_files or not self.old_files:
@@ -1225,7 +1622,8 @@ class MainWindow:
             else:
                 screen_mode = "pc"
             
-            settings = {
+            settings = dict(self.settings) if self.settings else {}
+            settings.update({
                 "screen_mode": screen_mode,
                 "zoom": self.zoom_var.get(),
                 "goto_address": "EX1" if not self.goto_address.get().strip() or self.goto_address.get().strip().upper() in ["A1", ""] else self.goto_address.get().strip(),
@@ -1234,7 +1632,7 @@ class MainWindow:
                 "highlight_fill_opacity": self.highlight_fill_opacity.get(),
                 "doc_mode": self.doc_mode_var.get(),
                 "print_area": self.print_area_var.get(),
-            }
+            })
             
             elapsed_time = self.comparator.start_legacy_comparison(
                 self.new_files,
@@ -1287,15 +1685,7 @@ class MainWindow:
             self.fill_color_label.config(text=f"  {color[1]}  ", bg=color[1])
             self._auto_save_settings()
 
-    def validate_dpi_input(self, event=None):
-        try:
-            val = self.pdf_render_dpi.get()
-            if val < 50:
-                self.pdf_render_dpi.set(50)
-            elif val > 300:
-                self.pdf_render_dpi.set(300)
-        except Exception:
-            self.pdf_render_dpi.set(100)
+
 
     # ========== SETTINGS AUTO SAVE ==========
     def _auto_save_settings(self):
@@ -1356,10 +1746,13 @@ class MainWindow:
             self.doc_mode_combo.config(values=[
                 get_text("mode_standard_cttt", lang),
                 get_text("mode_dukc_cttt", lang),
-                get_text("mode_dukc_other", lang)
+                get_text("mode_dukc_other", lang),
+                get_text("mode_custom", lang),
             ])
             if curr_idx >= 0:
                 self.doc_mode_combo.current(curr_idx)
+        if hasattr(self, 'btn_custom_config'):
+            self.btn_custom_config.config(text=f"⚙️ {get_text('btn_custom_config', lang)}")
 
         if hasattr(self, 'lbl_screen_mode'):
             self.lbl_screen_mode.config(text=get_text("screen_mode_label", lang))

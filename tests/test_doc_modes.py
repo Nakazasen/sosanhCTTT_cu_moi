@@ -12,22 +12,31 @@ from services.pdf_service import PDFService
 from services.settings_service import SettingsService
 from services.validation_service import ValidationService
 from core.comparator import Comparator
+from ui.main_window_modern import CustomModeConfigDialog, MainWindow
 
 
 class TestDocModesConfigAndTranslations(unittest.TestCase):
-    """Test configuration constants and translations for 3 document modes."""
+    """Test configuration constants and translations for document modes."""
 
     def test_doc_mode_constants_exist(self):
         self.assertEqual(config.DOC_MODE_STANDARD_CTTT, "standard_cttt")
         self.assertEqual(config.DOC_MODE_DUKC_CTTT, "dukc_cttt")
         self.assertEqual(config.DOC_MODE_DUKC_OTHER, "dukc_other")
+        self.assertEqual(config.DOC_MODE_CUSTOM, "custom")
 
         self.assertEqual(config.PRINT_AREA_STANDARD_CTTT, "EX1:GR76")
         self.assertEqual(config.PRINT_AREA_DUKC_CTTT, "J2:BD76")
         self.assertEqual(config.PRINT_AREA_DUKC_OTHER, "A1:AT120")
+        self.assertEqual(config.DEFAULT_CUSTOM_PRINT_AREA, "A1:Z100")
+
+    def test_default_output_folder_name_exists(self):
+        self.assertEqual(config.DEFAULT_OUTPUT_FOLDER_NAME, "KetQuaSoSanh_CTTT")
 
     def test_translations_for_all_modes_and_languages(self):
-        mode_keys = ["doc_type_label", "mode_standard_cttt", "mode_dukc_cttt", "mode_dukc_other", "print_area_label"]
+        mode_keys = [
+            "doc_type_label", "mode_standard_cttt", "mode_dukc_cttt", "mode_dukc_other", "mode_custom",
+            "print_area_label", "custom_config_title", "custom_range_group", "custom_sheet_group"
+        ]
         for lang in LANGUAGES.keys():
             for key in mode_keys:
                 text = get_text(key, lang)
@@ -215,6 +224,55 @@ class TestDukcOtherFormSheetLogic(unittest.TestCase):
 
         self.assertTrue(valid, error)
 
+    def test_standard_mode_accepts_matching_old_sheet_without_green_tab(self):
+        from openpyxl import Workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            new_path = os.path.join(temp_dir, "new.xlsx")
+            old_path = os.path.join(temp_dir, "old.xlsx")
+
+            new_book = Workbook()
+            new_sheet = new_book.active
+            new_sheet.title = "011 (2)"
+            new_sheet.sheet_properties.tabColor = "92D050"
+            new_book.save(new_path)
+
+            old_book = Workbook()
+            old_sheet = old_book.active
+            old_sheet.title = "011 (2)"
+            old_sheet.sheet_properties.tabColor = "00CC00"
+            old_book.save(old_path)
+
+            valid, error = ValidationService.validate_document_mode(
+                [new_path], [old_path], config.DOC_MODE_STANDARD_CTTT
+            )
+
+        self.assertTrue(valid, error)
+
+    def test_standard_mode_rejects_new_green_sheet_missing_from_old_file(self):
+        from openpyxl import Workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            new_path = os.path.join(temp_dir, "new.xlsx")
+            old_path = os.path.join(temp_dir, "old.xlsx")
+
+            new_book = Workbook()
+            new_sheet = new_book.active
+            new_sheet.title = "Selected"
+            new_sheet.sheet_properties.tabColor = "92D050"
+            new_book.save(new_path)
+
+            old_book = Workbook()
+            old_book.active.title = "Different"
+            old_book.save(old_path)
+
+            valid, error = ValidationService.validate_document_mode(
+                [new_path], [old_path], config.DOC_MODE_STANDARD_CTTT
+            )
+
+        self.assertFalse(valid)
+        self.assertTrue("trùng tên" in error or "tương ứng" in error)
+
     def test_form_workbooks_are_rejected_for_standard_mode(self):
         from openpyxl import Workbook
 
@@ -338,6 +396,88 @@ class TestPageSetupFitToOnePage(unittest.TestCase):
                 (4, 5, (20.0, False)),
             ],
         )
+
+
+class TestCustomDocModeLogic(unittest.TestCase):
+    """Test validation and custom sheet matching logic for DOC_MODE_CUSTOM."""
+
+    def test_custom_mode_validation_success(self):
+        settings = {
+            config.KEY_CUSTOM_PRINT_AREA: "A1:Z50",
+            config.KEY_CUSTOM_SHEET_MODE: config.CUSTOM_SHEET_MODE_ALL,
+        }
+        valid, msg = ValidationService.validate_document_mode([], [], config.DOC_MODE_CUSTOM, settings)
+        self.assertTrue(valid)
+        self.assertIsNone(msg)
+
+    def test_custom_mode_validation_empty_specified_sheets(self):
+        settings = {
+            config.KEY_CUSTOM_PRINT_AREA: "A1:Z50",
+            config.KEY_CUSTOM_SHEET_MODE: config.CUSTOM_SHEET_MODE_SPECIFIED,
+            config.KEY_CUSTOM_SPECIFIED_SHEETS: "   ",
+        }
+        valid, msg = ValidationService.validate_document_mode([], [], config.DOC_MODE_CUSTOM, settings)
+        self.assertFalse(valid)
+        self.assertIn("vui lòng nhập ít nhất một tên sheet", msg.lower())
+
+    def test_custom_mode_validation_empty_print_area(self):
+        settings = {
+            config.KEY_CUSTOM_PRINT_AREA: "   ",
+            config.KEY_CUSTOM_SHEET_MODE: config.CUSTOM_SHEET_MODE_ALL,
+        }
+        valid, msg = ValidationService.validate_document_mode([], [], config.DOC_MODE_CUSTOM, settings)
+        self.assertFalse(valid)
+        self.assertIn("vui lòng nhập phạm vi so sánh", msg.lower())
+
+    def test_settings_service_defaults_for_custom_mode(self):
+        service = SettingsService()
+        defaults = service.load_settings()
+        self.assertEqual(defaults.get(config.KEY_CUSTOM_PRINT_AREA), config.DEFAULT_CUSTOM_PRINT_AREA)
+        self.assertEqual(defaults.get(config.KEY_CUSTOM_SHEET_MODE), config.CUSTOM_SHEET_MODE_ALL)
+        self.assertEqual(defaults.get(config.KEY_CUSTOM_SPECIFIED_SHEETS), "")
+        self.assertEqual(defaults.get(config.KEY_CUSTOM_ONLY_GREEN), False)
+
+    def test_custom_dialog_saves_user_configuration(self):
+        dialog = CustomModeConfigDialog.__new__(CustomModeConfigDialog)
+        dialog.range_var = MagicMock(get=MagicMock(return_value="b2:p50"))
+        dialog.sheet_mode_var = MagicMock(get=MagicMock(return_value=config.CUSTOM_SHEET_MODE_SPECIFIED))
+        dialog.specified_sheets_var = MagicMock(get=MagicMock(return_value="Form, Data"))
+        dialog.only_green_var = MagicMock(get=MagicMock(return_value=True))
+        dialog.settings_service = MagicMock()
+        dialog.on_save_callback = MagicMock()
+        dialog.destroy = MagicMock()
+
+        dialog._on_save()
+
+        expected = {
+            config.KEY_CUSTOM_PRINT_AREA: "B2:P50",
+            config.KEY_CUSTOM_SHEET_MODE: config.CUSTOM_SHEET_MODE_SPECIFIED,
+            config.KEY_CUSTOM_SPECIFIED_SHEETS: "Form, Data",
+            config.KEY_CUSTOM_ONLY_GREEN: True,
+        }
+        dialog.settings_service.save_settings.assert_called_once_with(expected)
+        dialog.on_save_callback.assert_called_once_with(expected)
+        dialog.destroy.assert_called_once_with()
+
+    def test_open_custom_dialog_uses_settings_service_and_syncs_saved_area(self):
+        app = MainWindow.__new__(MainWindow)
+        app.master = MagicMock()
+        app.current_lang = "vi"
+        app.settings_service = MagicMock()
+        app.settings_service.settings = {config.KEY_CUSTOM_PRINT_AREA: "A1:Z100"}
+        app.settings = {}
+        app.print_area_var = MagicMock()
+        app.update_status = MagicMock()
+
+        with patch("ui.main_window_modern.CustomModeConfigDialog") as dialog_class:
+            app.open_custom_config_dialog()
+
+        args = dialog_class.call_args.args
+        self.assertIs(args[1], app.settings_service)
+        self.assertEqual(args[2], "vi")
+        callback = args[3]
+        callback({config.KEY_CUSTOM_PRINT_AREA: "J2:BD76"})
+        app.print_area_var.set.assert_called_once_with("J2:BD76")
 
 
 if __name__ == "__main__":

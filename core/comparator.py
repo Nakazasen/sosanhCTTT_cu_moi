@@ -119,6 +119,11 @@ class Comparator:
         status_callback: function(msg) to update UI.
         settings: dict of configuration values.
         """
+        """
+        Main entry point for comparison process.
+        status_callback: function(msg) to update UI.
+        settings: dict of configuration values.
+        """
         if len(new_file_list) != len(old_file_list):
             raise ValueError("File lists must have equal length.")
 
@@ -131,12 +136,12 @@ class Comparator:
         selected_mode = settings.get("doc_mode", config.DOC_MODE_STANDARD_CTTT)
         user_lang = settings.get("language", "vi")
         is_valid_mode, mode_error = ValidationService.validate_document_mode(
-            new_file_list, old_file_list, selected_mode, lang=user_lang
+            new_file_list, old_file_list, selected_mode, settings=settings, lang=user_lang
         )
         if not is_valid_mode:
             raise ValueError(mode_error)
 
-              # Start timing
+        # Start timing
         start_time = time.time()
         
         # Determine Output Folder
@@ -202,6 +207,8 @@ class Comparator:
             default_print_area = config.PRINT_AREA_DUKC_CTTT
         elif doc_mode == config.DOC_MODE_DUKC_OTHER:
             default_print_area = config.PRINT_AREA_DUKC_OTHER
+        elif doc_mode == config.DOC_MODE_CUSTOM:
+            default_print_area = (settings.get("custom_print_area") if settings else None) or config.DEFAULT_CUSTOM_PRINT_AREA
         else:
             default_print_area = config.PRINT_AREA_STANDARD_CTTT
             
@@ -231,7 +238,7 @@ class Comparator:
                     proc_path, _ = self.excel_service.standard_preprocess(f_path, is_new=False, auto_add_b=do_auto_b, new_sheet_names_ref=ref_mapping) 
                     processed_old_files.append(proc_path)
             else:
-                # DUKC modes: Keep original format intact
+                # DUKC modes & Custom mode: Keep original format intact
                 processed_new_files = list(working_new_files)
                 processed_old_files = list(working_old_files)
 
@@ -422,6 +429,8 @@ class Comparator:
             default_print_area = config.PRINT_AREA_DUKC_CTTT
         elif doc_mode == config.DOC_MODE_DUKC_OTHER:
             default_print_area = config.PRINT_AREA_DUKC_OTHER
+        elif doc_mode == config.DOC_MODE_CUSTOM:
+            default_print_area = (self.settings.get("custom_print_area") if self.settings else None) or config.DEFAULT_CUSTOM_PRINT_AREA
         else:
             default_print_area = config.PRINT_AREA_STANDARD_CTTT
         print_area = self.settings.get('print_area') if self.settings and self.settings.get('print_area') else default_print_area
@@ -512,6 +521,78 @@ class Comparator:
                         self.report_service.add_result(file_name, form_sheet_old, "ERROR", "Không xuất được PDF cũ")
                         continue
                     sheets_to_compare = getattr(self.pdf_service, 'last_exported_page_labels', None) or [form_sheet_new]
+
+                elif doc_mode == config.DOC_MODE_CUSTOM:
+                    # CUSTOM MODE: User defined range and sheet scope
+                    custom_sheet_mode = self.settings.get("custom_sheet_mode", config.CUSTOM_SHEET_MODE_ALL) if self.settings else config.CUSTOM_SHEET_MODE_ALL
+                    custom_specified_sheets = self.settings.get("custom_specified_sheets", "") if self.settings else ""
+                    custom_only_green = self.settings.get("custom_only_green", False) if self.settings else False
+
+                    if status_callback:
+                        status_callback(f"Reading sheets (Custom Mode): {file_name}")
+
+                    if custom_sheet_mode == config.CUSTOM_SHEET_MODE_SPECIFIED and custom_specified_sheets.strip():
+                        target_names = [s.strip() for s in custom_specified_sheets.split(",") if s.strip()]
+                        visible_new = self.pdf_service.get_visible_sheets_fast(new_path) or self.pdf_service.get_visible_sheets(new_path) or []
+                        visible_old = self.pdf_service.get_visible_sheets_fast(old_path) or self.pdf_service.get_visible_sheets(old_path) or []
+
+                        matching_sheets = []
+                        for req_name in target_names:
+                            matched_new = None
+                            for vn in visible_new:
+                                if vn.strip().lower() == req_name.lower():
+                                    matched_new = vn
+                                    break
+                            matched_old = None
+                            for vo in visible_old:
+                                if vo.strip().lower() == req_name.lower():
+                                    matched_old = vo
+                                    break
+                            if matched_new and matched_old:
+                                matching_sheets.append(matched_new)
+                            else:
+                                if not matched_new:
+                                    self.report_service.add_result(file_name, req_name, "MISSING", f"Không tìm thấy sheet '{req_name}' trong file mới")
+                                if not matched_old:
+                                    self.report_service.add_result(file_name, req_name, "MISSING", f"Không tìm thấy sheet '{req_name}' trong file cũ")
+                    else:
+                        if custom_only_green:
+                            colored_new = self.pdf_service.get_colored_sheets(new_path) or []
+                            colored_old = self.pdf_service.get_colored_sheets(old_path) or []
+                            matching_sheets = [s for s in colored_new if s in colored_old]
+                        else:
+                            visible_new = self.pdf_service.get_visible_sheets_fast(new_path) or self.pdf_service.get_visible_sheets(new_path) or []
+                            visible_old = self.pdf_service.get_visible_sheets_fast(old_path) or self.pdf_service.get_visible_sheets(old_path) or []
+                            matching_sheets = [s for s in visible_new if s in visible_old]
+
+                    if not matching_sheets:
+                        utils.logger.warning(f"No matching sheets found for Custom Mode in {file_name}")
+                        self.report_service.add_result(file_name, "N/A", "WARNING", "Không tìm thấy sheet nào phù hợp cấu hình tùy chỉnh")
+                        continue
+
+                    if status_callback:
+                        status_callback(f"Exporting PDF (NEW - Custom): {file_name}")
+                    pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
+                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        new_path, matching_sheets, pdf_new_path,
+                        print_area=print_area, _keep_alive=True
+                    )
+                    if not success_new:
+                        self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF mới")
+                        continue
+
+                    if status_callback:
+                        status_callback(f"Exporting PDF (OLD - Custom): {os.path.basename(old_path)}")
+                    pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
+                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        old_path, matching_sheets, pdf_old_path,
+                        print_area=print_area, _keep_alive=True,
+                        layout_reference_path=new_path
+                    )
+                    if not success_old:
+                        self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
+                        continue
+                    sheets_to_compare = getattr(self.pdf_service, 'last_exported_page_labels', None) or matching_sheets
 
                 else:
                     # DUKC CTTT MODE: Visible sheets with exact sheet name matching
@@ -681,7 +762,7 @@ class Comparator:
                         try:
                             if img_path and os.path.exists(img_path):
                                 os.remove(img_path)
-                        except:
+                        except Exception:
                             pass
                 
                 # Giữ PDF mới và rename thành {filename}.pdf (legacy behavior)
@@ -787,6 +868,31 @@ class Comparator:
                                 colored_sheets.append(sheet.Name.rstrip())
                         except Exception:
                             continue
+                elif doc_mode == config.DOC_MODE_CUSTOM:
+                    custom_sheet_mode = settings.get('custom_sheet_mode', config.CUSTOM_SHEET_MODE_ALL)
+                    custom_specified_sheets = settings.get('custom_specified_sheets', '')
+                    custom_only_green = settings.get('custom_only_green', False)
+
+                    if custom_sheet_mode == config.CUSTOM_SHEET_MODE_SPECIFIED and custom_specified_sheets.strip():
+                        target_names = [s.strip().lower() for s in custom_specified_sheets.split(",") if s.strip()]
+                        for sheet in wb_new.Sheets:
+                            try:
+                                if sheet.Name.strip().lower() in target_names:
+                                    colored_sheets.append(sheet.Name.rstrip())
+                            except Exception:
+                                continue
+                    else:
+                        for sheet in wb_new.Sheets:
+                            try:
+                                if custom_only_green:
+                                    if int(sheet.Tab.Color) == config.COLOR_GREEN_TAB:
+                                        colored_sheets.append(sheet.Name.rstrip())
+                                else:
+                                    is_visible = (sheet.Visible == -1 or sheet.Visible is True or sheet.Visible == 1)
+                                    if is_visible:
+                                        colored_sheets.append(sheet.Name.rstrip())
+                            except Exception:
+                                continue
                 else:
                     for sheet in wb_new.Sheets:
                         try:
@@ -798,7 +904,7 @@ class Comparator:
                 self.excel_service.close_workbook(wb_new)
                 
                 if not colored_sheets:
-                    err_msg = "Không tìm thấy sheet 'Form'" if doc_mode == config.DOC_MODE_DUKC_OTHER else "Không tìm thấy sheet màu xanh"
+                    err_msg = "Không tìm thấy sheet phù hợp"
                     self.report_service.add_result(file_name, "N/A", "ERROR", err_msg)
                     continue
                 

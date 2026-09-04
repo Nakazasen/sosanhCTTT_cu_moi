@@ -160,3 +160,11 @@ test_result_py.txt
 
 graphify-out/
 .brain/
+
+# Scratch test output artifacts
+scratch/custom-mode-e2e/
+scratch/speed_benchmark_*/
+scratch/user_simulation_*/
+scratch/test_compare_*/
+scratch/vn35869_*
+scratch/*_diff.png

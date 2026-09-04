@@ -133,6 +133,90 @@ TRANSLATIONS = {
         "zh": "已选择:",
         "ja": "選択済:"
     },
+    "mode_custom": {
+        "vi": "🛠️ 4. Tài liệu do người dùng chọn (Tùy chỉnh vùng & sheet)",
+        "en": "🛠️ 4. Custom Document (User-defined range & sheets)",
+        "zh": "🛠️ 4. 自定义文档 (用户自定义范围与工作表)",
+        "ja": "🛠️ 4. ユーザー定義ドキュメント (範囲とシート指定)"
+    },
+    "btn_custom_config": {
+        "vi": "⚙️ Thiết lập",
+        "en": "⚙️ Settings",
+        "zh": "⚙️ 设置",
+        "ja": "⚙️ 設定"
+    },
+    "custom_dialog_title": {
+        "vi": "Cấu hình So Sánh Tài Liệu Tùy Chỉnh",
+        "en": "Custom Document Comparison Settings",
+        "zh": "自定义文档对比设置",
+        "ja": "カスタムドキュメント比較設定"
+    },
+    "custom_config_title": {
+        "vi": "Cấu hình So Sánh Tài Liệu Tùy Chỉnh",
+        "en": "Custom Document Comparison Settings",
+        "zh": "自定义文档对比设置",
+        "ja": "カスタムドキュメント比較設定"
+    },
+    "custom_range_group": {
+        "vi": "2.1. Phạm vi vùng so sánh (Print Area):",
+        "en": "2.1. Comparison Range (Print Area):",
+        "zh": "2.1. 对比范围 (打印区域):",
+        "ja": "2.1. 比較範囲 (印刷範囲):"
+    },
+    "custom_range_hint": {
+        "vi": "Nhập dải ô (Ví dụ: A1:AT120, EX1:GR76, J2:BD76, A1:Z100...):",
+        "en": "Enter cell range (e.g., A1:AT120, EX1:GR76, J2:BD76, A1:Z100...):",
+        "zh": "输入单元格范围 (例如: A1:AT120, EX1:GR76, J2:BD76, A1:Z100...):",
+        "ja": "セル範囲を入力 (例: A1:AT120, EX1:GR76, J2:BD76, A1:Z100...):"
+    },
+    "custom_presets_label": {
+        "vi": "Gợi ý nhanh:",
+        "en": "Quick presets:",
+        "zh": "快速预设:",
+        "ja": "クイックプリセット:"
+    },
+    "custom_sheet_group": {
+        "vi": "2.2. Lựa chọn Sheet so sánh:",
+        "en": "2.2. Sheet Selection Scope:",
+        "zh": "2.2. 工作表对比范围选择:",
+        "ja": "2.2. 比較シートの選択:"
+    },
+    "custom_sheet_all": {
+        "vi": "Toàn bộ sheet (So sánh tất cả các sheet hiển thị có tên trùng khớp)",
+        "en": "All sheets (Compare all matching visible sheets)",
+        "zh": "全部工作表 (对比所有同名的可见工作表)",
+        "ja": "全シート (名前が一致するすべての表示シートを比較)"
+    },
+    "custom_sheet_specified": {
+        "vi": "Sheet chỉ định (Nhập danh sách tên sheet cần so sánh):",
+        "en": "Specified sheets (Enter sheet names to compare):",
+        "zh": "指定工作表 (输入需要对比的工作表名称):",
+        "ja": "指定シート (比較するシート名を入力):"
+    },
+    "custom_sheet_specified_placeholder": {
+        "vi": "Ví dụ: Form, Sheet1, Data (ngăn cách bằng dấu phẩy)",
+        "en": "e.g., Form, Sheet1, Data (comma-separated)",
+        "zh": "例如: Form, Sheet1, Data (逗号分隔)",
+        "ja": "例: Form, Sheet1, Data (カンマ区切り)"
+    },
+    "custom_only_green": {
+        "vi": "Chỉ so sánh các sheet có Tab màu xanh lá (Optional)",
+        "en": "Only compare sheets with green tabs (Optional)",
+        "zh": "仅对比绿色标签的工作表 (可选)",
+        "ja": "緑色タブのシートのみを比較 (オプション)"
+    },
+    "btn_save_apply": {
+        "vi": "💾 Lưu & Áp dụng",
+        "en": "💾 Save & Apply",
+        "zh": "💾 保存并应用",
+        "ja": "💾 保存して適用"
+    },
+    "print_area_label": {
+        "vi": "Phạm vi so sánh:",
+        "en": "Compare Range:",
+        "zh": "对比范围:",
+        "ja": "比較範囲:"
+    },
     "btn_select_old": {
         "vi": "📂 Chọn CTTT Cũ...",
         "en": "📂 Select Old SOP...",

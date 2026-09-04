@@ -78,10 +78,16 @@ SHEET_NAME_PREFIX = "b"
 DOC_MODE_STANDARD_CTTT = "standard_cttt"
 DOC_MODE_DUKC_CTTT = "dukc_cttt"
 DOC_MODE_DUKC_OTHER = "dukc_other"
+DOC_MODE_CUSTOM = "custom"
 
 PRINT_AREA_STANDARD_CTTT = "EX1:GR76"
 PRINT_AREA_DUKC_CTTT = "J2:BD76"
 PRINT_AREA_DUKC_OTHER = "A1:AT120"
+DEFAULT_CUSTOM_PRINT_AREA = "A1:Z100"
+
+# Custom mode constants
+CUSTOM_SHEET_MODE_ALL = "all"
+CUSTOM_SHEET_MODE_SPECIFIED = "specified"
 
 # Settings Keys
 KEY_THEME = "theme"
@@ -91,3 +97,7 @@ KEY_DIFF_THRESHOLD = "diff_threshold"
 KEY_GOTO_ADDRESS = "goto_address"
 KEY_DOC_MODE = "doc_mode"
 KEY_PRINT_AREA = "print_area"
+KEY_CUSTOM_PRINT_AREA = "custom_print_area"
+KEY_CUSTOM_SHEET_MODE = "custom_sheet_mode"
+KEY_CUSTOM_SPECIFIED_SHEETS = "custom_specified_sheets"
+KEY_CUSTOM_ONLY_GREEN = "custom_only_green"

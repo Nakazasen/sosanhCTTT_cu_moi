@@ -47,6 +47,21 @@ class TestUIBusyState(unittest.TestCase):
         self.assertEqual(str(app.btn_select_new.cget("state")), "disabled")
         self.assertEqual(len(app.workflow_step_labels), 5)
         self.assertIn("tài liệu", app.workflow_step_labels[0].cget("text").lower())
+        self.assertEqual(str(app.btn_custom_config.cget("state")), "disabled")
+
+    @patch('services.settings_service.SettingsService.load_settings', return_value={})
+    def test_custom_config_button_is_enabled_only_for_custom_mode(self, _mock_settings):
+        from ui.main_window_modern import MainWindow as ModernMainWindow
+
+        app = ModernMainWindow(self.root)
+        app.doc_mode_combo.current(1)
+        app.on_doc_mode_change()
+        self.assertEqual(str(app.btn_custom_config.cget("state")), "disabled")
+
+        with patch("ui.main_window_modern.CustomModeConfigDialog"):
+            app.doc_mode_combo.current(3)
+            app.on_doc_mode_change()
+        self.assertEqual(str(app.btn_custom_config.cget("state")), "normal")
 
     @patch('services.settings_service.SettingsService.load_settings', return_value={})
     def test_classic_window_is_processing_guard(self, mock_settings):
