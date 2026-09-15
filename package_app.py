@@ -18,6 +18,10 @@ BUNDLE = ARTIFACTS / "install_bundle"
 PUBLISH_DIR = Path("//fstvn01/Data/10_Production Engineering Department(製造技術部)/02.製造技術課/PE Dept/15. FORM（BIEU MAU）-形式/Form_VBA/Form_Phanmem_sosanhCTTT")
 UPDATE_DIR = PUBLISH_DIR / "release_update"
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+
 def release() -> dict:
     value = json.loads((ROOT / "release.json").read_text(encoding="utf-8-sig"))
     if not isinstance(value.get("version"), str):
@@ -50,6 +54,7 @@ def build_bundle() -> Path:
         "--name", "SosanhCTTT", "--distpath", str(ROOT / "dist"), "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build" / "specs"), "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets",
         "--add-data", f"{ROOT / 'release.json'}{os.pathsep}.", "--add-data", f"{ROOT / 'update_sources.default.json'}{os.pathsep}.",
+        "--icon", str(ROOT / "assets" / "icon.ico"),
         "--hidden-import", "pythoncom", "--hidden-import", "pywintypes", "--hidden-import", "win32com.client", str(ROOT / "main.py")
     ], check=True, cwd=ROOT)
     source = ROOT / "dist" / "SosanhCTTT"

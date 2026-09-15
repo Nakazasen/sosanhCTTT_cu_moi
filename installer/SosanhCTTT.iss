@@ -1,6 +1,6 @@
 ; Inno Setup 6 script.  AppId must remain unchanged between releases.
 #define AppName "So sanh CTTT"
-#define AppVersion "7.4.0"
+#define AppVersion "7.4.3"
 #define AppPublisher "PE Dept"
 #define AppId "{{B655CBC7-65DB-4DFD-BEDB-8B8E14822DD8}}"
 #define BundleDir "..\release_artifacts\install_bundle"
@@ -14,6 +14,8 @@ DefaultDirName={localappdata}\SosanhCTTT
 DefaultGroupName={#AppName}
 OutputDir=..\release_artifacts
 OutputBaseFilename=SosanhCTTT_Setup_{#AppVersion}
+SetupIconFile=..\assets\icon.ico
+UninstallIconFile=..\assets\icon.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

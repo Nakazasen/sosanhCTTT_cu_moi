@@ -24,10 +24,126 @@ except ImportError:
     utils.logger.warning("OpenCV (cv2) not available. Falling back to PIL for image comparison.")
 
 
+def match_histograms_lut(source, reference):
+    """
+    Histogram matching using lookup table (LUT).
+    Maps the intensity distribution of `source` to match `reference`.
+    """
+    if source.size == 0 or reference.size == 0:
+        return source
+    h_s = cv2.calcHist([source], [0], None, [256], [0, 256]).ravel()
+    h_r = cv2.calcHist([reference], [0], None, [256], [0, 256]).ravel()
+    cdf_s = np.cumsum(h_s) / source.size
+    cdf_r = np.cumsum(h_r) / reference.size
+    lut = np.zeros(256, dtype=np.uint8)
+    for i in range(256):
+        idx = np.searchsorted(cdf_r, cdf_s[i])
+        lut[i] = min(255, idx)
+    return cv2.LUT(source, lut)
+
+
+def match_bgr_crop(s_crop, r_crop):
+    """
+    Applies histogram matching across all BGR channels for a cropped region.
+    """
+    if s_crop.size == 0 or r_crop.size == 0:
+        return s_crop
+    matched = np.zeros_like(s_crop)
+    for ch in range(3):
+        matched[:, :, ch] = match_histograms_lut(s_crop[:, :, ch], r_crop[:, :, ch])
+    return matched
+
+
+def detect_thin_lines(gray, is_horizontal=True):
+    """
+    Detect 1-2px thin lines by peak detection (local minimum or maximum along the orthogonal axis).
+    Returns boolean mask of thin line centers.
+    """
+    if is_horizontal:
+        padded = np.pad(gray, ((1, 1), (0, 0)), mode='edge')
+        top = padded[:-2, :].astype(np.int16)
+        bot = padded[2:, :].astype(np.int16)
+        cur = gray.astype(np.int16)
+        dark_line = (cur < 210) & ((top - cur) > 20) & ((bot - cur) > 20)
+        light_line = (cur > 45) & ((cur - top) > 20) & ((cur - bot) > 20)
+        return dark_line | light_line
+    else:
+        padded = np.pad(gray, ((0, 0), (1, 1)), mode='edge')
+        left = padded[:, :-2].astype(np.int16)
+        right = padded[:, 2:].astype(np.int16)
+        cur = gray.astype(np.int16)
+        dark_line = (cur < 210) & ((left - cur) > 20) & ((right - cur) > 20)
+        light_line = (cur > 45) & ((cur - left) > 20) & ((cur - right) > 20)
+        return dark_line | light_line
+
+
+def filter_thin_gridline_shifts(diff_mask, img1_bgr, img2_bgr, max_shift_px=1):
+    """
+    Triệt tiêu các vệt chênh lệch dạng đường kẻ mảnh (<= 1.5 px) sinh ra do sai số
+    căn chỉnh lưới bảng tính (layout/subpixel jitter) hoặc khử răng cưa antialiasing,
+    với điều kiện đường kẻ tồn tại đồng thời trên cả hai bản (không có thay đổi văn bản/nội dung).
+    Các độ lệch thực tế >= 2px vẫn được bảo toàn và phát hiện đầy đủ.
+    """
+    if diff_mask is None or cv2.countNonZero(diff_mask) == 0:
+        return diff_mask
+
+    h, w = diff_mask.shape[:2]
+    if h < 8 or w < 8:
+        return diff_mask
+
+    try:
+        gray1 = cv2.cvtColor(img1_bgr, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2GRAY)
+    except Exception:
+        return diff_mask
+
+    # Horizontal lines: detect thin line centers
+    h_line1 = detect_thin_lines(gray1, is_horizontal=True)
+    h_line2 = detect_thin_lines(gray2, is_horizontal=True)
+    k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
+    h_line1_dil = cv2.dilate(h_line1.astype(np.uint8), k_v).astype(bool)
+    h_line2_dil = cv2.dilate(h_line2.astype(np.uint8), k_v).astype(bool)
+    both_have_h_line = (h_line1_dil & h_line2) | (h_line2_dil & h_line1)
+
+    # Vertical lines: detect thin line centers
+    v_line1 = detect_thin_lines(gray1, is_horizontal=False)
+    v_line2 = detect_thin_lines(gray2, is_horizontal=False)
+    k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
+    v_line1_dil = cv2.dilate(v_line1.astype(np.uint8), k_h).astype(bool)
+    v_line2_dil = cv2.dilate(v_line2.astype(np.uint8), k_h).astype(bool)
+    both_have_v_line = (v_line1_dil & v_line2) | (v_line2_dil & v_line1)
+
+    line_shift_region = both_have_h_line | both_have_v_line
+    if not np.any(line_shift_region):
+        return diff_mask
+
+    k_expand = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    line_shift_expanded = cv2.dilate(line_shift_region.astype(np.uint8), k_expand).astype(bool)
+
+    cleaned_mask = diff_mask.copy()
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(diff_mask)
+    for lbl in range(1, num_labels):
+        x, y, w_b, h_b, area = stats[lbl]
+        comp = (labels == lbl)
+        overlap = np.count_nonzero(comp & line_shift_expanded)
+        ratio = overlap / area if area > 0 else 0
+
+        is_thin_h = (h_b <= 3 and w_b >= 8 and (w_b / max(1, h_b)) >= 2.5)
+        is_thin_v = (w_b <= 3 and h_b >= 8 and (h_b / max(1, w_b)) >= 2.5)
+        is_thin_segment = (h_b <= 2 or w_b <= 2) and area <= 50
+
+        if (is_thin_h or is_thin_v or is_thin_segment) and ratio >= 0.65:
+            cleaned_mask[comp] = 0
+
+    return cleaned_mask
+
+
 def compare_images_opencv(img_new, img_old, diff_threshold=40, dilate_size=3, 
                           dilate_iterations=2, highlight_color="#ff0000", fill_opacity=40):
     """
     So sánh hai ảnh PIL và tạo ảnh highlight sử dụng OpenCV.
+    Tích hợp cân bằng độ sáng (Histogram Matching) và Jitter Tolerance để triệt tiêu
+    false positive do thay đổi Brightness / Contrast thuần túy.
     
     Args:
         img_new: PIL Image (ảnh mới)
@@ -61,13 +177,120 @@ def compare_images_opencv(img_new, img_old, diff_threshold=40, dilate_size=3,
     # Convert to grayscale
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     
-    # Apply threshold to create binary mask
+    # Apply threshold to check initial differences
     threshold = max(0, min(255, int(diff_threshold)))
-    _, raw_mask = cv2.threshold(diff_gray, threshold, 255, cv2.THRESH_BINARY)
+    _, initial_mask = cv2.threshold(diff_gray, threshold, 255, cv2.THRESH_BINARY)
     
-    # Đếm số pixel khác biệt thực tế
-    diff_pixels = cv2.countNonZero(raw_mask)
-    has_diff = diff_pixels > 0
+    if cv2.countNonZero(initial_mask) == 0:
+        raw_mask = initial_mask
+        diff_pixels = 0
+        has_diff = False
+    else:
+        # 1-Pixel Shift / Jitter Tolerance on original difference
+        h, w = new_cv.shape[:2]
+        padded_old = cv2.copyMakeBorder(old_cv, 1, 1, 1, 1, cv2.BORDER_REPLICATE)
+        padded_new = cv2.copyMakeBorder(new_cv, 1, 1, 1, 1, cv2.BORDER_REPLICATE)
+
+        min_orig_new = diff_gray.copy()
+        min_orig_old = diff_gray.copy()
+
+        for dy in range(3):
+            for dx in range(3):
+                if dy == 1 and dx == 1:
+                    continue
+                shifted_old = padded_old[dy:dy+h, dx:dx+w]
+                d_new = cv2.cvtColor(cv2.absdiff(new_cv, shifted_old), cv2.COLOR_BGR2GRAY)
+                min_orig_new = np.minimum(min_orig_new, d_new)
+
+                shifted_new = padded_new[dy:dy+h, dx:dx+w]
+                d_old = cv2.cvtColor(cv2.absdiff(old_cv, shifted_new), cv2.COLOR_BGR2GRAY)
+                min_orig_old = np.minimum(min_orig_old, d_old)
+
+        orig_jitter = np.maximum(min_orig_new, min_orig_old)
+        _, orig_mask = cv2.threshold(orig_jitter, threshold, 255, cv2.THRESH_BINARY)
+        orig_mask = filter_thin_gridline_shifts(orig_mask, new_cv, old_cv, max_shift_px=2)
+        
+        if cv2.countNonZero(orig_mask) == 0:
+            raw_mask = orig_mask
+            diff_pixels = 0
+            has_diff = False
+        else:
+            # Group candidate difference clusters
+            kernel = np.ones((5, 5), np.uint8)
+            dilated_candidates = cv2.dilate(orig_mask, kernel, iterations=2)
+            contours, _ = cv2.findContours(dilated_candidates, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            final_mask = orig_mask.copy()
+            
+            for c in contours:
+                x, y, w_box, h_box = cv2.boundingRect(c)
+                # Ignore small contours (letters, lines, punctuation marks)
+                if w_box < 15 or h_box < 15 or (w_box * h_box) < 300:
+                    continue
+                
+                s_crop = new_cv[y:y+h_box, x:x+w_box]
+                r_crop = old_cv[y:y+h_box, x:x+w_box]
+                
+                # Check for texture / non-uniform variation (photo or complex graphic)
+                if s_crop.std() < 8.0 or r_crop.std() < 8.0:
+                    continue
+
+                # Verify that the candidate region is genuinely the same image scene
+                # via Pearson correlation (avoids false-erasing added/deleted components)
+                s_flat = s_crop.ravel().astype(np.float64)
+                r_flat = r_crop.ravel().astype(np.float64)
+                c_matrix = np.corrcoef(s_flat, r_flat)
+                if np.isnan(c_matrix[0, 1]) or c_matrix[0, 1] < 0.90:
+                    continue
+                
+                norm_crop = match_bgr_crop(s_crop, r_crop)
+                h_c, w_c = s_crop.shape[:2]
+                padded_r = cv2.copyMakeBorder(r_crop, 1, 1, 1, 1, cv2.BORDER_REPLICATE)
+                padded_n = cv2.copyMakeBorder(norm_crop, 1, 1, 1, 1, cv2.BORDER_REPLICATE)
+                d_norm_raw = cv2.cvtColor(cv2.absdiff(norm_crop, r_crop), cv2.COLOR_BGR2GRAY)
+                
+                min_n_new = d_norm_raw.copy()
+                min_n_old = d_norm_raw.copy()
+                for dy in range(3):
+                    for dx in range(3):
+                        if dy == 1 and dx == 1:
+                            continue
+                        d1 = cv2.cvtColor(cv2.absdiff(norm_crop, padded_r[dy:dy+h_c, dx:dx+w_c]), cv2.COLOR_BGR2GRAY)
+                        min_n_new = np.minimum(min_n_new, d1)
+                        d2 = cv2.cvtColor(cv2.absdiff(r_crop, padded_n[dy:dy+h_c, dx:dx+w_c]), cv2.COLOR_BGR2GRAY)
+                        min_n_old = np.minimum(min_n_old, d2)
+                crop_norm_jitter = np.maximum(min_n_new, min_n_old)
+                
+                crop_orig_jitter = orig_jitter[y:y+h_box, x:x+w_box]
+                crop_combined = np.minimum(crop_orig_jitter, crop_norm_jitter)
+                _, crop_mask = cv2.threshold(crop_combined, threshold, 255, cv2.THRESH_BINARY)
+                
+                # Filter small noise and saturation blowout speckles
+                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(crop_mask)
+                cleaned_crop_mask = np.zeros_like(crop_mask)
+                
+                clip_high = (s_crop.min(axis=2) >= 238) & (r_crop.min(axis=2) >= 140)
+                clip_high_rev = (r_crop.min(axis=2) >= 238) & (s_crop.min(axis=2) >= 140)
+                clip_low = (s_crop.max(axis=2) <= 15) & (r_crop.max(axis=2) <= 100)
+                clip_low_rev = (r_crop.max(axis=2) <= 15) & (s_crop.max(axis=2) <= 100)
+                is_clip = clip_high | clip_high_rev | clip_low | clip_low_rev
+
+                for lbl in range(1, num_labels):
+                    area = stats[lbl, cv2.CC_STAT_AREA]
+                    if area <= 3:
+                        continue
+                    lbl_mask = (labels == lbl)
+                    sat_in_lbl = np.count_nonzero(lbl_mask & is_clip)
+                    if area <= 30 and (sat_in_lbl / area) > 0.6:
+                        continue
+                    cleaned_crop_mask[lbl_mask] = 255
+
+                final_mask[y:y+h_box, x:x+w_box] = cleaned_crop_mask
+
+            final_mask = filter_thin_gridline_shifts(final_mask, new_cv, old_cv, max_shift_px=2)
+            raw_mask = final_mask
+            diff_pixels = cv2.countNonZero(raw_mask)
+            has_diff = diff_pixels > 0
     
     overlay = new_cv.copy()
     

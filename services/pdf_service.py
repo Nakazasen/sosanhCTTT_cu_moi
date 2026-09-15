@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import shutil
 import uuid
@@ -174,6 +175,101 @@ class PDFService:
         if self.excel_pid:
             utils.kill_specific_excel_process(self.excel_pid)
             self.excel_pid = None
+
+    @staticmethod
+    def _ensure_a4_printer(excel_app):
+        """
+        Ensure Excel COM uses a printer that natively respects A4 dimensions (e.g. Microsoft Print to PDF),
+        preventing physical printer drivers with US Letter defaults from overriding PageSetup.PaperSize.
+        """
+        if not excel_app:
+            return False
+        try:
+            cur = str(excel_app.ActivePrinter)
+            if "Microsoft Print to PDF" in cur:
+                return True
+        except Exception:
+            pass
+
+        target = None
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows NT\CurrentVersion\Devices")
+            val, _ = winreg.QueryValueEx(key, "Microsoft Print to PDF")
+            port = val.split(",")[-1].strip()
+            target = f"Microsoft Print to PDF on {port}"
+        except Exception:
+            pass
+
+        if target:
+            try:
+                excel_app.ActivePrinter = target
+                utils.logger.info(f"Set Excel ActivePrinter to: {target}")
+                return True
+            except Exception as e:
+                utils.logger.warning(f"Failed to set ActivePrinter to '{target}': {e}")
+
+        for i in range(30):
+            p = f"Microsoft Print to PDF on Ne{i:02d}:"
+            try:
+                excel_app.ActivePrinter = p
+                utils.logger.info(f"Set Excel ActivePrinter to: {p}")
+                return True
+            except Exception:
+                pass
+
+        return False
+
+    @staticmethod
+    def normalize_pdf_to_a4(pdf_path):
+        """
+        Normalize all pages in a PDF to standard A4 dimensions (595.28 x 841.89 pt).
+        If the PDF was exported in US Letter (612 x 792 pt) or another non-standard size
+        due to default printer driver settings, this rescales the vector pages to A4.
+        """
+        if not PYMUPDF_AVAILABLE or not pdf_path or not os.path.exists(pdf_path):
+            return False
+        try:
+            import fitz
+            src_doc = fitz.open(pdf_path)
+            needs_norm = False
+            for page in src_doc:
+                w, h = page.rect.width, page.rect.height
+                is_landscape = w > h
+                target_w = 841.89 if is_landscape else 595.28
+                target_h = 595.28 if is_landscape else 841.89
+                if abs(w - target_w) > 2.0 or abs(h - target_h) > 2.0:
+                    needs_norm = True
+                    break
+
+            if not needs_norm:
+                src_doc.close()
+                return True
+
+            utils.logger.info(f"Normalizing non-A4 PDF pages to standard A4: {pdf_path}")
+            norm_doc = fitz.open()
+            for page in src_doc:
+                w, h = page.rect.width, page.rect.height
+                is_landscape = w > h
+                target_w = 841.89 if is_landscape else 595.28
+                target_h = 595.28 if is_landscape else 841.89
+                target_rect = fitz.Rect(0, 0, target_w, target_h)
+                new_page = norm_doc.new_page(width=target_w, height=target_h)
+                new_page.show_pdf_page(target_rect, src_doc, page.number)
+
+            temp_norm = pdf_path + ".a4norm.tmp"
+            norm_doc.save(temp_norm, deflate=True)
+            src_doc.close()
+            norm_doc.close()
+
+            if os.path.exists(temp_norm):
+                os.replace(temp_norm, pdf_path)
+                utils.logger.info(f"Successfully normalized PDF to A4: {pdf_path}")
+                return True
+            return False
+        except Exception as e:
+            utils.logger.warning(f"Failed to normalize PDF to A4 '{pdf_path}': {e}")
+            return False
     
     def get_colored_sheets(self, file_path):
         """
@@ -518,6 +614,8 @@ class PDFService:
         reference_range = reference_sheet.Range(print_area)
 
         def changed(reference, current, field):
+            if current is None:
+                return reference
             current_by_index = {item["index"]: item for item in current}
             result = []
             for item in reference:
@@ -530,7 +628,9 @@ class PDFService:
                     result.append(item)
             return result
 
-        changed_columns = changed(reference_layout["columns"], current_layout["columns"], "size")
+        ref_cols = reference_layout.get("columns", []) if reference_layout else []
+        cur_cols = current_layout.get("columns") if current_layout else None
+        changed_columns = changed(ref_cols, cur_cols, "size")
         for group in cls._group_layout_dimensions(changed_columns):
             relative_index = group["start"] - min_col + 1
             effective_width = reference_range.Columns(relative_index).EntireColumn.ColumnWidth
@@ -538,7 +638,7 @@ class PDFService:
             end = get_column_letter(group["end"])
             target_sheet.Range(f"{start}:{end}").EntireColumn.ColumnWidth = effective_width
 
-        hidden_columns = changed(reference_layout["columns"], current_layout["columns"], "hidden")
+        hidden_columns = changed(ref_cols, cur_cols, "hidden")
         for group in cls._group_layout_dimensions(hidden_columns):
             relative_index = group["start"] - min_col + 1
             hidden = reference_range.Columns(relative_index).EntireColumn.Hidden
@@ -546,13 +646,15 @@ class PDFService:
             end = get_column_letter(group["end"])
             target_sheet.Range(f"{start}:{end}").EntireColumn.Hidden = hidden
 
-        changed_rows = changed(reference_layout["rows"], current_layout["rows"], "size")
+        ref_rows = reference_layout.get("rows", []) if reference_layout else []
+        cur_rows = current_layout.get("rows") if current_layout else None
+        changed_rows = changed(ref_rows, cur_rows, "size")
         for group in cls._group_layout_dimensions(changed_rows):
-            relative_index = group["start"] - min_row + 1
-            effective_height = reference_range.Rows(relative_index).EntireRow.RowHeight
-            target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow.RowHeight = effective_height
+            # Use exact float row height from openpyxl XML (group["key"][0])
+            # to prevent Excel COM RowHeight getter from rounding/truncating float values (e.g. 17.15 -> 17.0)
+            target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow.RowHeight = group["key"][0]
 
-        hidden_rows = changed(reference_layout["rows"], current_layout["rows"], "hidden")
+        hidden_rows = changed(ref_rows, cur_rows, "hidden")
         for group in cls._group_layout_dimensions(hidden_rows):
             relative_index = group["start"] - min_row + 1
             hidden = reference_range.Rows(relative_index).EntireRow.Hidden
@@ -593,6 +695,7 @@ class PDFService:
                 Notify=False,
                 AddToMru=False
             )
+            self._ensure_a4_printer(self.excel_app)
 
             if layout_reference_path:
                 for sheet_name in sheet_names:
@@ -608,14 +711,20 @@ class PDFService:
                         utils.logger.warning(
                             f"Could not read reference layout for '{sheet_name}': {layout_error}"
                         )
-                utils.unblock_file(layout_reference_path)
-                reference_workbook = self.excel_app.Workbooks.Open(
-                    layout_reference_path,
-                    ReadOnly=True,
-                    UpdateLinks=False,
-                    Notify=False,
-                    AddToMru=False,
-                )
+                try:
+                    utils.unblock_file(layout_reference_path)
+                    reference_workbook = self.excel_app.Workbooks.Open(
+                        layout_reference_path,
+                        ReadOnly=True,
+                        UpdateLinks=False,
+                        Notify=False,
+                        AddToMru=False,
+                    )
+                except Exception as ref_open_err:
+                    utils.logger.warning(
+                        f"Could not open reference workbook via COM '{layout_reference_path}': {ref_open_err}. Fallback to openpyxl layout."
+                    )
+                    reference_workbook = None
             
             # Find and export each sheet
             for idx, sheet_name in enumerate(sheet_names, 1):
@@ -684,6 +793,10 @@ class PDFService:
                 # Setup PageSetup for export (essential properties only for maximum speed)
                 try:
                     sheet.Activate()
+                    try:
+                        self.excel_app.PrintCommunication = False
+                    except Exception:
+                        pass
                     ps = sheet.PageSetup
                     
                     # Set print area & essential fit: Fit width & height to 1 page (do not split into multiple pages)
@@ -692,9 +805,18 @@ class PDFService:
                     ps.Zoom = False
                     ps.FitToPagesWide = 1
                     ps.FitToPagesTall = 1
+                    ps.LeftMargin = 0
+                    ps.RightMargin = 0
+                    ps.TopMargin = 0
+                    ps.BottomMargin = 0
                     ps.CenterHorizontally = True
                 except Exception as e:
                     utils.logger.error(f"Error setting up sheet '{sheet_name}': {e}")
+                finally:
+                    try:
+                        self.excel_app.PrintCommunication = True
+                    except Exception:
+                        pass
                 
                 # Export to temp PDF
                 safe_name = utils.sanitize_filename_strict(sheet_name)
@@ -762,6 +884,7 @@ class PDFService:
                     pass
             
             if os.path.exists(output_pdf_path):
+                self.normalize_pdf_to_a4(output_pdf_path)
                 utils.logger.info(f"PDF export successful: {output_pdf_path}")
                 return True
             
@@ -810,6 +933,7 @@ class PDFService:
                 Notify=False,
                 AddToMru=False
             )
+            self._ensure_a4_printer(self.excel_app)
             
             selected_sheets = []
             for sheet in workbook.Sheets:
@@ -838,15 +962,28 @@ class PDFService:
                 sheet_name = sheet.Name.rstrip()
                 try:
                     sheet.Activate()
+                    try:
+                        self.excel_app.PrintCommunication = False
+                    except Exception:
+                        pass
                     ps = sheet.PageSetup
                     ps.PrintArea = print_area
                     ps.PaperSize = 9
                     ps.Zoom = False
                     ps.FitToPagesWide = 1
                     ps.FitToPagesTall = 1
+                    ps.LeftMargin = 0
+                    ps.RightMargin = 0
+                    ps.TopMargin = 0
+                    ps.BottomMargin = 0
                     ps.CenterHorizontally = True
                 except Exception as e:
                     utils.logger.warning(f"PageSetup failed for '{sheet_name}': {e}")
+                finally:
+                    try:
+                        self.excel_app.PrintCommunication = True
+                    except Exception:
+                        pass
                     
                 safe_name = utils.sanitize_filename_strict(sheet_name)
                 unique_id = str(uuid.uuid4())[:8]
@@ -891,6 +1028,9 @@ class PDFService:
                 shutil.move(temp_pdf_files[0], output_pdf_path)
                 temp_pdf_files = []
                 success = True
+
+            if success and os.path.exists(output_pdf_path):
+                self.normalize_pdf_to_a4(output_pdf_path)
                 
             for temp_pdf in temp_pdf_files:
                 try:
@@ -972,7 +1112,10 @@ class PDFService:
                     
                     # If main method failed, try fallback (will reuse self.excel_app)
                     utils.logger.warning(f"Main method failed, trying fallback...")
-                    success = self._export_pdf_fallback(file_path, sheet_names, output_pdf_path, print_area)
+                    success = self._export_pdf_fallback(
+                        file_path, sheet_names, output_pdf_path, print_area,
+                        layout_reference_path=layout_reference_path
+                    )
                     if success and os.path.exists(output_pdf_path):
                         utils.logger.info(f"Fallback export successful")
                         return True
@@ -992,7 +1135,8 @@ class PDFService:
             if not _keep_alive:
                 self._cleanup_excel()
     
-    def _export_pdf_fallback(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76"):
+    def _export_pdf_fallback(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76",
+                             layout_reference_path=None):
         """
         Fallback method: Copy sheets to new workbook and export from there.
         
@@ -1005,6 +1149,9 @@ class PDFService:
         own_excel = False
         workbook = None
         new_workbook = None
+        reference_workbook = None
+        reference_layouts = {}
+        current_layouts = {}
         temp_excel_path = None
         excel = None
         
@@ -1047,6 +1194,36 @@ class PDFService:
             # Unblock and open source file
             utils.unblock_file(file_path)
             workbook = excel.Workbooks.Open(file_path, ReadOnly=True, UpdateLinks=False)
+            self._ensure_a4_printer(excel)
+
+            if layout_reference_path:
+                for sheet_name in sheet_names:
+                    try:
+                        key = sheet_name.strip().lower()
+                        reference_layouts[key] = self._read_sheet_layout(
+                            layout_reference_path, sheet_name, print_area
+                        )
+                        current_layouts[key] = self._read_sheet_layout(
+                            file_path, sheet_name, print_area
+                        )
+                    except Exception as layout_error:
+                        utils.logger.warning(
+                            f"Fallback: Could not read reference layout for '{sheet_name}': {layout_error}"
+                        )
+                try:
+                    utils.unblock_file(layout_reference_path)
+                    reference_workbook = excel.Workbooks.Open(
+                        layout_reference_path,
+                        ReadOnly=True,
+                        UpdateLinks=False,
+                        Notify=False,
+                        AddToMru=False,
+                    )
+                except Exception as ref_open_err:
+                    utils.logger.warning(
+                        f"Fallback: Could not open reference workbook via COM '{layout_reference_path}': {ref_open_err}. Fallback to openpyxl layout."
+                    )
+                    reference_workbook = None
             
             # Create new workbook
             new_workbook = excel.Workbooks.Add()
@@ -1080,9 +1257,42 @@ class PDFService:
                         source_sheet.Copy(After=new_workbook.Sheets(new_workbook.Sheets.Count))
                         copied_sheet = new_workbook.Sheets(new_workbook.Sheets.Count)
                         copied_count += 1
+
+                        reference_layout = reference_layouts.get(sheet_name.strip().lower())
+                        if reference_layout:
+                            try:
+                                reference_sheet = None
+                                if reference_workbook:
+                                    reference_sheet = self._find_sheet(reference_workbook, sheet_name)
+                                if reference_sheet:
+                                    self._sync_changed_layout_from_com(
+                                        copied_sheet,
+                                        reference_sheet,
+                                        reference_layout,
+                                        current_layouts.get(sheet_name.strip().lower()),
+                                        print_area,
+                                    )
+                                else:
+                                    self._apply_sheet_layout(
+                                        copied_sheet,
+                                        reference_layout,
+                                        current_layouts.get(sheet_name.strip().lower()),
+                                    )
+                                excel.CutCopyMode = False
+                                utils.logger.info(
+                                    f"Fallback: Synchronized layout for '{sheet_name}' from comparison reference"
+                                )
+                            except Exception as sync_error:
+                                utils.logger.warning(
+                                    f"Fallback: Could not synchronize layout for '{sheet_name}': {sync_error}"
+                                )
                         
                         # Setup PageSetup
                         try:
+                            try:
+                                excel.PrintCommunication = False
+                            except Exception:
+                                pass
                             ps = copied_sheet.PageSetup
                             ps.PrintArea = print_area
                             ps.Orientation = 1  # Portrait
@@ -1102,6 +1312,11 @@ class PDFService:
                             ps.PrintGridlines = False
                         except Exception as ps_err:
                             utils.logger.warning(f"PageSetup error for {sheet_name}: {ps_err}")
+                        finally:
+                            try:
+                                excel.PrintCommunication = True
+                            except Exception:
+                                pass
                             
                 except Exception as e:
                     utils.logger.error(f"Error copying sheet {sheet_name}: {e}")
@@ -1131,13 +1346,21 @@ class PDFService:
                 OpenAfterPublish=False
             )
             
-            utils.logger.info(f"Fallback export completed: {output_pdf_path}")
-            return os.path.exists(output_pdf_path)
+            if os.path.exists(output_pdf_path):
+                self.normalize_pdf_to_a4(output_pdf_path)
+                utils.logger.info(f"Fallback export completed: {output_pdf_path}")
+                return True
+            return False
             
         except Exception as e:
             utils.logger.error(f"Fallback export failed: {e}")
             return False
         finally:
+            try:
+                if reference_workbook:
+                    reference_workbook.Close(SaveChanges=False)
+            except:
+                pass
             try:
                 if new_workbook:
                     new_workbook.Close(SaveChanges=False)
@@ -1228,22 +1451,34 @@ class PDFService:
             return images
         
         try:
-            # Calculate zoom based on DPI (72 is PDF default)
-            zoom = dpi / 72.0
-            matrix = fitz.Matrix(zoom, zoom)
-            
             doc = fitz.open(pdf_path)
             
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
+                w, h = page.rect.width, page.rect.height
+                is_landscape = w > h
+                target_w_pt = 841.89 if is_landscape else 595.28
+                target_h_pt = 595.28 if is_landscape else 841.89
+                if dpi == 100:
+                    target_w_px = 1170 if is_landscape else 827
+                    target_h_px = 827 if is_landscape else 1170
+                else:
+                    target_w_px = int(math.ceil(target_w_pt * dpi / 72.0))
+                    target_h_px = int(math.ceil(target_h_pt * dpi / 72.0))
+                
+                scale_x = target_w_px / w if w > 0 else (dpi / 72.0)
+                scale_y = target_h_px / h if h > 0 else (dpi / 72.0)
+                matrix = fitz.Matrix(scale_x, scale_y)
                 pix = page.get_pixmap(matrix=matrix, alpha=False)
                 
                 # Convert to PIL Image
                 img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                if img.size != (target_w_px, target_h_px):
+                    img = img.resize((target_w_px, target_h_px), Image.Resampling.LANCZOS)
                 images.append(img)
             
             doc.close()
-            utils.logger.info(f"Rendered {len(images)} pages from {pdf_path} at DPI={dpi}")
+            utils.logger.info(f"Rendered {len(images)} pages from {pdf_path} at DPI={dpi} (normalized A4)")
             
         except Exception as e:
             utils.logger.error(f"Error rendering PDF to images: {e}")
@@ -1267,9 +1502,6 @@ class PDFService:
             return None
         
         try:
-            zoom = dpi / 72.0
-            matrix = fitz.Matrix(zoom, zoom)
-            
             doc = fitz.open(pdf_path)
             if page_num >= len(doc):
                 utils.logger.error(f"Page {page_num} does not exist in {pdf_path}")
@@ -1277,8 +1509,24 @@ class PDFService:
                 return None
             
             page = doc.load_page(page_num)
+            w, h = page.rect.width, page.rect.height
+            is_landscape = w > h
+            target_w_pt = 841.89 if is_landscape else 595.28
+            target_h_pt = 595.28 if is_landscape else 841.89
+            if dpi == 100:
+                target_w_px = 1170 if is_landscape else 827
+                target_h_px = 827 if is_landscape else 1170
+            else:
+                target_w_px = int(math.ceil(target_w_pt * dpi / 72.0))
+                target_h_px = int(math.ceil(target_h_pt * dpi / 72.0))
+            
+            scale_x = target_w_px / w if w > 0 else (dpi / 72.0)
+            scale_y = target_h_px / h if h > 0 else (dpi / 72.0)
+            matrix = fitz.Matrix(scale_x, scale_y)
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            if img.size != (target_w_px, target_h_px):
+                img = img.resize((target_w_px, target_h_px), Image.Resampling.LANCZOS)
             
             doc.close()
             return img
@@ -1354,7 +1602,7 @@ class PDFService:
             if OPENCV_COMPARE_AVAILABLE:
                 # Use OpenCV-optimized comparison (10-50x faster)
                 utils.logger.debug(f"[OPTIMIZED] Using OpenCV for image comparison: {sheet_name}")
-                left_img, right_img = compare_images_opencv(
+                left_img, right_img, has_diff, diff_count = compare_images_opencv(
                     img_new, img_old,
                     diff_threshold=diff_threshold,
                     dilate_size=dilate_size,

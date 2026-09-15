@@ -474,7 +474,11 @@ class Comparator:
                         status_callback(f"Exporting PDF (OLD): {os.path.basename(old_path)}")
                         
                     pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
-                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(old_path, colored_sheets, pdf_old_path, print_area=print_area, _keep_alive=True)
+                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        old_path, colored_sheets, pdf_old_path,
+                        print_area=print_area, _keep_alive=True,
+                        layout_reference_path=new_path
+                    )
                     
                     if not success_old:
                         self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
@@ -638,7 +642,11 @@ class Comparator:
                     if status_callback:
                         status_callback(f"Exporting PDF (OLD): {os.path.basename(old_path)}")
                     pdf_old_path = os.path.join(output_folder, f"CTTTcu_{idx}.pdf")
-                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(old_path, matching_sheets, pdf_old_path, print_area=print_area, _keep_alive=True)
+                    success_old = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        old_path, matching_sheets, pdf_old_path,
+                        print_area=print_area, _keep_alive=True,
+                        layout_reference_path=new_path
+                    )
                     if not success_old:
                         self.report_service.add_result(file_name, "N/A", "ERROR", "Không xuất được PDF cũ")
                         continue

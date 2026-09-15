@@ -7,15 +7,24 @@ import config
 
 
 class TestUIBusyState(unittest.TestCase):
-    def setUp(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tk.Tk()
+        cls.root.withdraw()
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            self.root.destroy()
+            cls.root.destroy()
         except Exception:
             pass
+
+    def tearDown(self):
+        for child in self.root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
 
     @patch('services.settings_service.SettingsService.load_settings', return_value={})
     def test_modern_window_is_processing_guard(self, mock_settings):

@@ -162,9 +162,20 @@ graphify-out/
 .brain/
 
 # Scratch test output artifacts
-scratch/custom-mode-e2e/
-scratch/speed_benchmark_*/
-scratch/user_simulation_*/
-scratch/test_compare_*/
-scratch/vn35869_*
-scratch/*_diff.png
+scratch/*
+!scratch/cleanup_test_folders.py
+!scratch/extract_new_previews.py
+!scratch/inspect_detailed_setup.py
+!scratch/inspect_pagesetup.py
+!scratch/inspect_samples.py
+!scratch/inspect_shapes.py
+!scratch/list_result_files.py
+!scratch/preview_page_1.png
+!scratch/preview_page_2.png
+!scratch/run_deep_dev_orchestration.py
+!scratch/test_004.pdf
+!scratch/test_live_samples.py
+!scratch/test_pdf_export_paging.py
+!scratch/verify_output_excel.py
+!scratch/verify_sheet_order.py
+!scratch/KetQuaSoSanh_CTTT_20260904_131730/

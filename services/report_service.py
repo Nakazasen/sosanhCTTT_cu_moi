@@ -158,13 +158,21 @@ class ReportService:
         try:
             from PIL import Image as PILImage
             
-            zoom = dpi / 72.0
-            mtx = fitz.Matrix(zoom, zoom)
-            
             with fitz.open(pdf_path) as doc:
                 page = doc.load_page(0)
+                w, h = page.rect.width, page.rect.height
+                is_landscape = w > h
+                target_w_pt = 841.89 if is_landscape else 595.28
+                target_h_pt = 595.28 if is_landscape else 841.89
+                target_w_px = round(target_w_pt * dpi / 72.0)
+                target_h_px = round(target_h_pt * dpi / 72.0)
+                scale_x = target_w_px / w if w > 0 else (dpi / 72.0)
+                scale_y = target_h_px / h if h > 0 else (dpi / 72.0)
+                mtx = fitz.Matrix(scale_x, scale_y)
                 pm = page.get_pixmap(matrix=mtx, alpha=False)
                 pil_img = PILImage.frombytes("RGB", (pm.width, pm.height), pm.samples)
+                if pil_img.size != (target_w_px, target_h_px):
+                    pil_img = pil_img.resize((target_w_px, target_h_px), PILImage.Resampling.LANCZOS)
                 
                 # Save temp preview
                 safe_name = "".join(c for c in os.path.basename(pdf_path) if c.isalnum() or c in '_-')
@@ -319,13 +327,26 @@ class ReportService:
                         if comparison_path.endswith('.pdf') and PYMUPDF_AVAILABLE:
                             # Render PDF to image first
                             from PIL import Image as PILImage
-                            zoom = dpi / 72.0
-                            mtx = fitz.Matrix(zoom, zoom)
-                            
                             with fitz.open(comparison_path) as doc:
                                 page = doc.load_page(0)
+                                w, h = page.rect.width, page.rect.height
+                                is_side_by_side = w > 1.3 * h
+                                if is_side_by_side:
+                                    target_w_pt = 2 * 595.28
+                                    target_h_pt = 841.89
+                                else:
+                                    is_landscape = w > h
+                                    target_w_pt = 841.89 if is_landscape else 595.28
+                                    target_h_pt = 595.28 if is_landscape else 841.89
+                                target_w_px = round(target_w_pt * dpi / 72.0)
+                                target_h_px = round(target_h_pt * dpi / 72.0)
+                                scale_x = target_w_px / w if w > 0 else (dpi / 72.0)
+                                scale_y = target_h_px / h if h > 0 else (dpi / 72.0)
+                                mtx = fitz.Matrix(scale_x, scale_y)
                                 pm = page.get_pixmap(matrix=mtx, alpha=False)
                                 pil_img = PILImage.frombytes("RGB", (pm.width, pm.height), pm.samples)
+                                if pil_img.size != (target_w_px, target_h_px):
+                                    pil_img = pil_img.resize((target_w_px, target_h_px), PILImage.Resampling.LANCZOS)
                                 
                                 temp_preview = os.path.join(output_folder, f"__temp_preview_{sheet_name}_{int(time.time())}.png")
                                 pil_img.save(temp_preview, 'PNG')

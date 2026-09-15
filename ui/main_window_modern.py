@@ -235,6 +235,14 @@ class MainWindow:
         self.master = master
         self.master.title(get_text("app_title", "vi"))
         
+        # Set Window Icon
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "icon.ico")
+            if os.path.exists(icon_path):
+                self.master.iconbitmap(icon_path)
+        except Exception:
+            pass
+
         # Settings Service
         self.settings_service = SettingsService()
         self.settings = self.settings_service.settings

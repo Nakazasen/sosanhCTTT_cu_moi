@@ -133,7 +133,7 @@ def benchmark_opencv_method(img_new, img_old, iterations=5):
     for i in range(iterations):
         start = time.perf_counter()
         
-        left_img, right_img = compare_images_opencv(
+        left_img, right_img, has_diff, diff_count = compare_images_opencv(
             img_new, img_old,
             diff_threshold=40,
             dilate_size=3,

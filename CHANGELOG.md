@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [7.4.3] - 2026-09-15 - Chuẩn Hóa Khổ Trang A4 & Khử Báo Động Giả Đường Kẻ Bảng
+
+### 🎯 Added & Upgraded
+- **Khóa Máy In Chuẩn A4 trong Excel COM**:
+  - Tự động phát hiện cổng thiết bị máy in `"Microsoft Print to PDF on ..."` từ Windows Registry (`HKCU\Software\Microsoft\Windows NT\CurrentVersion\Devices`) và gán cứng cho `excel.ActivePrinter`.
+  - Bọc toàn bộ thiết lập `PageSetup` (`PaperSize = 9` - xlPaperA4, `FitToPagesWide = 1`, `FitToPagesTall = 1`) bằng cặp `excel.PrintCommunication = False` và `finally: excel.PrintCommunication = True`, ngăn chặn triệt để Windows driver bên thứ 3 ép khổ US Letter ($612 \times 792$ pt).
+- **Chuẩn Hóa Khổ Trang PDF Chuẩn Sau Khi Xuất (Post-Export Rescaling)**:
+  - Tích hợp `PDFService.normalize_pdf_to_a4` bằng PyMuPDF: Tự động kiểm tra và co dãn chính xác mọi trang PDF không đúng kích thước về A4 tiêu chuẩn ($595.28 \times 841.89$ pt).
+  - Chuẩn hóa tỷ lệ ma trận rendering ảnh PIL trong `PDFService.render_pdf_to_images` và `ReportService._embed_pdf_preview` về cố định $(827, 1170)$ px ở DPI=100.
+- **Đồng Bộ Chiều Cao Dòng Float Chính Xác Từ XML**:
+  - `_sync_changed_layout_from_com` chuyển sang gán trực tiếp giá trị float độ chính xác cao lấy từ XML openpyxl thay vì đọc lại thuộc tính `RowHeight` của COM (vốn làm tròn số thành nguyên).
+- **Bộ Lọc Khử Lệch Vi Phân Đường Kẻ Bảng (Morphological Subpixel Line Filter)**:
+  - Tích hợp giải thuật phát hiện đỉnh cực trị (`detect_thin_lines`) và `filter_thin_gridline_shifts` trong `services/optimized_image_compare.py`.
+  - Khử triệt để 110 hộp bôi đỏ vi sai $\le 1.5$ px do khử răng cưa/co dãn bảng trên máy có thiết lập in khác nhau, đồng thời giữ nguyên độ nhạy $100\%$ đối với các thay đổi nội dung chữ số, linh kiện và nét vẽ mới.
+
+### 🧪 Tests
+- Bổ sung bộ kiểm thử `tests/test_a4_normalization.py` bao phủ: Chuẩn hóa Letter $\to$ A4, độ phân giải 100 DPI, phân giải ActivePrinter từ Registry, bảo toàn float RowHeight, khử lệch 1px đường kẻ và bắt trọn thay đổi thực tế.
+
+---
+
 ## [2026-08-26] - Refactored Deterministic Harness & Accuracy Upgrade
 
 ### 🎯 Added
