@@ -157,6 +157,12 @@ class PDFService:
                 self.excel_app.AskToUpdateLinks = False
             except Exception:
                 pass
+
+            # Pre-lock Excel COM ActivePrinter to A4-compliant virtual driver before any workbooks are opened
+            try:
+                self._ensure_a4_printer(self.excel_app)
+            except Exception:
+                pass
             
             try:
                 self.excel_pid = utils.get_excel_pid(self.excel_app)
@@ -181,6 +187,7 @@ class PDFService:
         """
         Ensure Excel COM uses a printer that natively respects A4 dimensions (e.g. Microsoft Print to PDF),
         preventing physical printer drivers with US Letter defaults from overriding PageSetup.PaperSize.
+        Supports international Windows editions with localized port prepositions.
         """
         if not excel_app:
             return False
@@ -191,27 +198,47 @@ class PDFService:
         except Exception:
             pass
 
-        target = None
+        ports = []
         try:
             import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows NT\CurrentVersion\Devices")
             val, _ = winreg.QueryValueEx(key, "Microsoft Print to PDF")
             port = val.split(",")[-1].strip()
-            target = f"Microsoft Print to PDF on {port}"
+            if port:
+                ports.append(port)
         except Exception:
             pass
 
-        if target:
+        prepositions = ["on", "sur", "auf", "en", "su"]
+        for port in ports:
+            for prep in prepositions:
+                target = f"Microsoft Print to PDF {prep} {port}"
+                try:
+                    excel_app.ActivePrinter = target
+                    utils.logger.info(f"Set Excel ActivePrinter to: {target}")
+                    return True
+                except Exception:
+                    pass
             try:
+                target = f"Microsoft Print to PDF {port}"
                 excel_app.ActivePrinter = target
                 utils.logger.info(f"Set Excel ActivePrinter to: {target}")
                 return True
-            except Exception as e:
-                utils.logger.warning(f"Failed to set ActivePrinter to '{target}': {e}")
+            except Exception:
+                pass
 
-        for i in range(30):
-            p = f"Microsoft Print to PDF on Ne{i:02d}:"
+        for i in range(32):
+            port = f"Ne{i:02d}:"
+            for prep in prepositions:
+                p = f"Microsoft Print to PDF {prep} {port}"
+                try:
+                    excel_app.ActivePrinter = p
+                    utils.logger.info(f"Set Excel ActivePrinter to: {p}")
+                    return True
+                except Exception:
+                    pass
             try:
+                p = f"Microsoft Print to PDF {port}"
                 excel_app.ActivePrinter = p
                 utils.logger.info(f"Set Excel ActivePrinter to: {p}")
                 return True
@@ -225,7 +252,8 @@ class PDFService:
         """
         Normalize all pages in a PDF to standard A4 dimensions (595.28 x 841.89 pt).
         If the PDF was exported in US Letter (612 x 792 pt) or another non-standard size
-        due to default printer driver settings, this rescales the vector pages to A4.
+        due to default printer driver settings, this rescales the vector pages to A4
+        without letterbox margin distortion (keep_proportion=False).
         """
         if not PYMUPDF_AVAILABLE or not pdf_path or not os.path.exists(pdf_path):
             return False
@@ -253,9 +281,14 @@ class PDFService:
                 is_landscape = w > h
                 target_w = 841.89 if is_landscape else 595.28
                 target_h = 595.28 if is_landscape else 841.89
-                target_rect = fitz.Rect(0, 0, target_w, target_h)
-                new_page = norm_doc.new_page(width=target_w, height=target_h)
-                new_page.show_pdf_page(target_rect, src_doc, page.number)
+                if abs(w - target_w) <= 2.0 and abs(h - target_h) <= 2.0:
+                    # Page is already A4; copy exact vector page without modification
+                    norm_doc.insert_pdf(src_doc, from_page=page.number, to_page=page.number)
+                else:
+                    # Explicit keep_proportion=False to map (0, 0) -> (0, 0) and avoid 35pt dead margins
+                    target_rect = fitz.Rect(0, 0, target_w, target_h)
+                    new_page = norm_doc.new_page(width=target_w, height=target_h)
+                    new_page.show_pdf_page(target_rect, src_doc, page.number, keep_proportion=False)
 
             temp_norm = pdf_path + ".a4norm.tmp"
             norm_doc.save(temp_norm, deflate=True)
@@ -1748,6 +1781,8 @@ class PDFService:
         """
         try:
             sheet.ExportAsFixedFormat(0, output_path)  # 0 = xlTypePDF
+            if os.path.exists(output_path):
+                PDFService.normalize_pdf_to_a4(output_path)
             return True
         except Exception as e:
             utils.logger.error(f"Export to PDF failed: {e}")

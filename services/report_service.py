@@ -9,6 +9,7 @@ Enhanced để hỗ trợ:
 
 import os
 import time
+import math
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.drawing.image import Image as xlImage
@@ -164,8 +165,12 @@ class ReportService:
                 is_landscape = w > h
                 target_w_pt = 841.89 if is_landscape else 595.28
                 target_h_pt = 595.28 if is_landscape else 841.89
-                target_w_px = round(target_w_pt * dpi / 72.0)
-                target_h_px = round(target_h_pt * dpi / 72.0)
+                if dpi == 100:
+                    target_w_px = 1170 if is_landscape else 827
+                    target_h_px = 827 if is_landscape else 1170
+                else:
+                    target_w_px = int(math.ceil(target_w_pt * dpi / 72.0))
+                    target_h_px = int(math.ceil(target_h_pt * dpi / 72.0))
                 scale_x = target_w_px / w if w > 0 else (dpi / 72.0)
                 scale_y = target_h_px / h if h > 0 else (dpi / 72.0)
                 mtx = fitz.Matrix(scale_x, scale_y)
@@ -338,8 +343,16 @@ class ReportService:
                                     is_landscape = w > h
                                     target_w_pt = 841.89 if is_landscape else 595.28
                                     target_h_pt = 595.28 if is_landscape else 841.89
-                                target_w_px = round(target_w_pt * dpi / 72.0)
-                                target_h_px = round(target_h_pt * dpi / 72.0)
+                                if dpi == 100:
+                                    if is_side_by_side:
+                                        target_w_px = 1654
+                                        target_h_px = 1170
+                                    else:
+                                        target_w_px = 1170 if is_landscape else 827
+                                        target_h_px = 827 if is_landscape else 1170
+                                else:
+                                    target_w_px = int(math.ceil(target_w_pt * dpi / 72.0))
+                                    target_h_px = int(math.ceil(target_h_pt * dpi / 72.0))
                                 scale_x = target_w_px / w if w > 0 else (dpi / 72.0)
                                 scale_y = target_h_px / h if h > 0 else (dpi / 72.0)
                                 mtx = fitz.Matrix(scale_x, scale_y)

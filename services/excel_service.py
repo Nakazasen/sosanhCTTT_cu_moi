@@ -169,6 +169,11 @@ class ExcelService:
                 workbook.ExportAsFixedFormat(0, final_output_path) # 0 = xlTypePDF
                 
                 if os.path.exists(final_output_path) and os.path.getsize(final_output_path) > 0:
+                    try:
+                        from services.pdf_service import PDFService
+                        PDFService.normalize_pdf_to_a4(final_output_path)
+                    except Exception:
+                        pass
                     return final_output_path
             except Exception as e:
                 utils.logger.warning(f"Export PDF attempt {attempt+1} failed: {e}")

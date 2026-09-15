@@ -142,6 +142,60 @@ class TestA4NormalizationAndGridlineFilter(unittest.TestCase):
         self.assertTrue(has_diff, "Text change near line must be detected")
         self.assertGreater(diff_pixels, 0)
 
+    def test_normalize_pdf_to_a4_preserves_content_origin_without_vertical_shift(self):
+        """Verify that normalize_pdf_to_a4 scales content directly to (0, 0) without 35pt letterbox margin."""
+        test_pdf = os.path.join(self.temp_dir, "content_origin_test.pdf")
+        doc = fitz.open()
+        p = doc.new_page(width=612, height=792)
+        # Top border at y=10
+        p.draw_rect(fitz.Rect(10, 10, 602, 782), color=(0, 0, 0), width=1)
+        doc.save(test_pdf)
+        doc.close()
+
+        PDFService.normalize_pdf_to_a4(test_pdf)
+
+        doc_norm = fitz.open(test_pdf)
+        pix = doc_norm[0].get_pixmap()
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, 3))
+        black_y = np.where(arr[:, :, 0] < 50)[0]
+        # In unletterboxed scaling: y=10 * (841.89 / 792.0) = 10.63 -> pix index 10-12
+        # If letterboxed, black_y.min() would be ~45
+        self.assertLess(black_y.min(), 15, f"Content was shifted down by letterboxing, top pixel at {black_y.min()}")
+        doc_norm.close()
+
+    def test_detect_thin_lines_identifies_antialiased_and_multi_pixel_lines(self):
+        """Verify that detect_thin_lines identifies antialiased lines split across 2 subpixel rows."""
+        # Antialiased line: 50% split across rows 20 and 21
+        gray_aa = np.full((50, 60), 255, dtype=np.uint8)
+        gray_aa[20, :] = 110
+        gray_aa[21, :] = 110
+        res_aa = detect_thin_lines(gray_aa, is_horizontal=True)
+        detected_rows = np.where(res_aa.any(axis=1))[0]
+        self.assertTrue(20 in detected_rows or 21 in detected_rows, "Antialiased 2px line must be detected")
+
+        # 2px dark line
+        gray_2px = np.full((50, 60), 255, dtype=np.uint8)
+        gray_2px[20:22, :] = 0
+        res_2px = detect_thin_lines(gray_2px, is_horizontal=True)
+        detected_2px_rows = np.where(res_2px.any(axis=1))[0]
+        self.assertTrue(20 in detected_2px_rows or 21 in detected_2px_rows, "2px dark line must be detected")
+
+    def test_filter_thin_gridline_shifts_eliminates_antialiased_subpixel_shift(self):
+        """Verify that subpixel line shift with antialiasing (simulating 0.05pt row diff) is eliminated."""
+        im1 = np.full((60, 100, 3), 255, dtype=np.uint8)
+        im1[20, 10:90, :] = 120
+        im1[21, 10:90, :] = 130
+
+        im2 = np.full((60, 100, 3), 255, dtype=np.uint8)
+        im2[21, 10:90, :] = 50
+
+        pil1 = Image.fromarray(im1)
+        pil2 = Image.fromarray(im2)
+
+        left, right, has_diff, diff_pixels = compare_images_opencv(pil1, pil2, diff_threshold=40)
+        self.assertFalse(has_diff, f"Antialiased 1.5-2px line shift should be filtered, got diff_pixels={diff_pixels}")
+        self.assertEqual(diff_pixels, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
