@@ -54,127 +54,12 @@ def match_bgr_crop(s_crop, r_crop):
     return matched
 
 
-def detect_thin_lines(gray, is_horizontal=True):
-    """
-    Detect thin lines (1-2.5px) by combining:
-    1. Local orthogonal peak/dip profile detection (for 1px and 2px lines)
-    2. Morphological black-hat / top-hat transform along the orthogonal axis
-       followed by opening along the line axis.
-    Returns boolean mask of thin line pixels.
-    """
-    if is_horizontal:
-        padded = np.pad(gray, ((2, 2), (0, 0)), mode='edge')
-        t1 = padded[1:-3, :].astype(np.int16)
-        t2 = padded[:-4, :].astype(np.int16)
-        b1 = padded[3:-1, :].astype(np.int16)
-        b2 = padded[4:, :].astype(np.int16)
-        cur = gray.astype(np.int16)
-
-        d1 = (cur < 220) & ((t1 - cur) > 18) & ((b1 - cur) > 18)
-        l1 = (cur > 35) & ((cur - t1) > 18) & ((cur - b1) > 18)
-        d2_t = (cur < 220) & ((t1 - cur) > 18) & ((b2 - cur) > 18) & (np.abs(cur - b1) < 40)
-        d2_b = (cur < 220) & ((b1 - cur) > 18) & ((t2 - cur) > 18) & (np.abs(cur - t1) < 40)
-        l2_t = (cur > 35) & ((cur - t1) > 18) & ((cur - b2) > 18) & (np.abs(cur - b1) < 40)
-        l2_b = (cur > 35) & ((cur - b1) > 18) & ((cur - t2) > 18) & (np.abs(cur - t1) < 40)
-        peak_mask = d1 | l1 | d2_t | d2_b | l2_t | l2_b
-
-        k_cross = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
-        k_along = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 1))
-    else:
-        padded = np.pad(gray, ((0, 0), (2, 2)), mode='edge')
-        l1 = padded[:, 1:-3].astype(np.int16)
-        l2 = padded[:, :-4].astype(np.int16)
-        r1 = padded[:, 3:-1].astype(np.int16)
-        r2 = padded[:, 4:].astype(np.int16)
-        cur = gray.astype(np.int16)
-
-        d1 = (cur < 220) & ((l1 - cur) > 18) & ((r1 - cur) > 18)
-        l1_mask = (cur > 35) & ((cur - l1) > 18) & ((cur - r1) > 18)
-        d2_l = (cur < 220) & ((l1 - cur) > 18) & ((r2 - cur) > 18) & (np.abs(cur - r1) < 40)
-        d2_r = (cur < 220) & ((r1 - cur) > 18) & ((l2 - cur) > 18) & (np.abs(cur - l1) < 40)
-        l2_l = (cur > 35) & ((cur - l1) > 18) & ((cur - r2) > 18) & (np.abs(cur - r1) < 40)
-        l2_r = (cur > 35) & ((cur - r1) > 18) & ((cur - l2) > 18) & (np.abs(cur - l1) < 40)
-        peak_mask = d1 | l1_mask | d2_l | d2_r | l2_l | l2_r
-
-        k_cross = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 1))
-        k_along = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 11))
-
-    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, k_cross)
-    tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, k_cross)
-    morph_response = cv2.max(blackhat, tophat)
-    _, morph_mask = cv2.threshold(morph_response, 20, 255, cv2.THRESH_BINARY)
-    morph_line = cv2.morphologyEx(morph_mask, cv2.MORPH_OPEN, k_along) > 0
-
-    return peak_mask | morph_line
-
-
-def filter_thin_gridline_shifts(diff_mask, img1_bgr, img2_bgr, max_shift_px=1):
-    """
-    Triệt tiêu các vệt chênh lệch dạng đường kẻ mảnh (<= 1.5 - 2 px) sinh ra do sai số
-    căn chỉnh lưới bảng tính (layout/subpixel jitter) hoặc khử răng cưa antialiasing,
-    với điều kiện đường kẻ tồn tại đồng thời trên cả hai bản (không có thay đổi văn bản/nội dung).
-    Các độ lệch thực tế >= 3px hoặc đường kẻ thêm/xóa/đổi nội dung vẫn được bảo toàn.
-    """
-    if diff_mask is None or cv2.countNonZero(diff_mask) == 0:
-        return diff_mask
-
-    h, w = diff_mask.shape[:2]
-    if h < 8 or w < 8:
-        return diff_mask
-
-    try:
-        gray1 = cv2.cvtColor(img1_bgr, cv2.COLOR_BGR2GRAY)
-        gray2 = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2GRAY)
-    except Exception:
-        return diff_mask
-
-    # Horizontal lines: detect thin line centers & profiles
-    h_line1 = detect_thin_lines(gray1, is_horizontal=True)
-    h_line2 = detect_thin_lines(gray2, is_horizontal=True)
-    k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 2 * max_shift_px + 1))
-    h_line1_dil = cv2.dilate(h_line1.astype(np.uint8), k_v).astype(bool)
-    h_line2_dil = cv2.dilate(h_line2.astype(np.uint8), k_v).astype(bool)
-    both_have_h_line = (h_line1_dil & h_line2) | (h_line2_dil & h_line1)
-
-    # Vertical lines: detect thin line centers & profiles
-    v_line1 = detect_thin_lines(gray1, is_horizontal=False)
-    v_line2 = detect_thin_lines(gray2, is_horizontal=False)
-    k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * max_shift_px + 1, 1))
-    v_line1_dil = cv2.dilate(v_line1.astype(np.uint8), k_h).astype(bool)
-    v_line2_dil = cv2.dilate(v_line2.astype(np.uint8), k_h).astype(bool)
-    both_have_v_line = (v_line1_dil & v_line2) | (v_line2_dil & v_line1)
-
-    line_shift_region = both_have_h_line | both_have_v_line
-    if not np.any(line_shift_region):
-        return diff_mask
-
-    k_expand = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * max_shift_px + 1, 2 * max_shift_px + 1))
-    line_shift_expanded = cv2.dilate(line_shift_region.astype(np.uint8), k_expand).astype(bool)
-
-    cleaned_mask = diff_mask.copy()
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(diff_mask)
-    for lbl in range(1, num_labels):
-        x, y, w_b, h_b, area = stats[lbl]
-        comp = (labels == lbl)
-        overlap = np.count_nonzero(comp & line_shift_expanded)
-        ratio = overlap / area if area > 0 else 0
-
-        is_thin_h = (h_b <= (max_shift_px + 2) and w_b >= 8 and (w_b / max(1, h_b)) >= 2.0)
-        is_thin_v = (w_b <= (max_shift_px + 2) and h_b >= 8 and (h_b / max(1, w_b)) >= 2.0)
-        is_thin_segment = (h_b <= (max_shift_px + 1) or w_b <= (max_shift_px + 1)) and area <= 80
-
-        if (is_thin_h or is_thin_v or is_thin_segment) and ratio >= 0.50:
-            cleaned_mask[comp] = 0
-
-    return cleaned_mask
-
-
 def compare_images_opencv(img_new, img_old, diff_threshold=40, dilate_size=3, 
                           dilate_iterations=2, highlight_color="#ff0000", fill_opacity=40):
     """
-    So sánh hai ảnh PIL và tạo ảnh highlight sử dụng OpenCV.
+    So sánh hai ảnh PIL và tạo ảnh highlight sử dụng OpenCV (Chuẩn hóa v7.4.2).
     Tích hợp cân bằng độ sáng (Histogram Matching) và Jitter Tolerance để triệt tiêu
-    false positive do thay đổi Brightness / Contrast thuần túy.
+    false positive do thay đổi Brightness / Contrast thuần túy mà vẫn đảm bảo tốc độ cao.
     
     Args:
         img_new: PIL Image (ảnh mới)
@@ -239,7 +124,6 @@ def compare_images_opencv(img_new, img_old, diff_threshold=40, dilate_size=3,
 
         orig_jitter = np.maximum(min_orig_new, min_orig_old)
         _, orig_mask = cv2.threshold(orig_jitter, threshold, 255, cv2.THRESH_BINARY)
-        orig_mask = filter_thin_gridline_shifts(orig_mask, new_cv, old_cv, max_shift_px=1)
         
         if cv2.countNonZero(orig_mask) == 0:
             raw_mask = orig_mask
@@ -318,7 +202,6 @@ def compare_images_opencv(img_new, img_old, diff_threshold=40, dilate_size=3,
 
                 final_mask[y:y+h_box, x:x+w_box] = cleaned_crop_mask
 
-            final_mask = filter_thin_gridline_shifts(final_mask, new_cv, old_cv, max_shift_px=1)
             raw_mask = final_mask
             diff_pixels = cv2.countNonZero(raw_mask)
             has_diff = diff_pixels > 0

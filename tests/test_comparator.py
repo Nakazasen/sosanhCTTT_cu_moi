@@ -299,6 +299,44 @@ class TestComparator(unittest.TestCase):
         self.assertTrue(has_diff, "Deleted grey box must be detected")
         self.assertGreater(diff_pixels, 500)
 
+    def test_smart_name_prefix_extracts_id_when_new_is_generic(self):
+        """Test that generic new template filename gets old document code prepended"""
+        from services.report_service import ReportService
+        f_new = "KDTVN-A-PE-BM-014-X Bản yêu cầu đối ứng khẩn cấp New_2026.xlsm"
+        f_old = "VN 36223.xlsm"
+        prefix = ReportService.get_smart_name_prefix(f_new, f_old)
+        self.assertEqual(prefix, "[VN 36223] ")
+
+    def test_smart_name_prefix_no_duplicate_when_already_in_new(self):
+        """Test that if code is already in new filename, no prefix is added"""
+        from services.report_service import ReportService
+        f_new = "VN 35869 mới.xlsx"
+        f_old = "VN 35869 cũ.xlsx"
+        prefix = ReportService.get_smart_name_prefix(f_new, f_old)
+        self.assertEqual(prefix, "")
+
+    def test_smart_name_prefix_handles_none_or_empty(self):
+        """Test graceful handling of None or empty paths"""
+        from services.report_service import ReportService
+        self.assertEqual(ReportService.get_smart_name_prefix("test.xlsx", None), "")
+        self.assertEqual(ReportService.get_smart_name_prefix(None, "old.xlsx"), "")
+
+    def test_smart_result_base_name_uses_code_for_generic_template(self):
+        """Test that generic new template filename is replaced with concise [code]"""
+        from services.report_service import ReportService
+        f_new = "KDTVN-A-PE-BM-014-X Bản yêu cầu đối ứng khẩn cấp New_2026.xlsm"
+        f_old = "VN 36223.xlsm"
+        base = ReportService.get_smart_result_base_name(f_new, f_old)
+        self.assertEqual(base, "[VN 36223]")
+
+    def test_smart_result_base_name_keeps_normal_name(self):
+        """Test that non-generic template filenames retain normal name"""
+        from services.report_service import ReportService
+        f_new = "VN 35869 mới.xlsx"
+        f_old = "VN 35869 cũ.xlsx"
+        base = ReportService.get_smart_result_base_name(f_new, f_old)
+        self.assertEqual(base, "VN 35869 mới")
+
 if __name__ == '__main__':
     unittest.main()
 

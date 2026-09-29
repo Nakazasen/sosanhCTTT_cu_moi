@@ -838,9 +838,10 @@ class MainWindow:
         self.btn_select_new.config(state="normal" if has_doc_mode and not self.is_processing else "disabled")
         self.btn_select_old.config(state="normal" if has_doc_mode and has_new and not self.is_processing else "disabled")
         self.btn_check_order.config(state="normal" if counts_match and not self.is_processing else "disabled")
+        is_dukc_mode = self.doc_mode_var.get() in (config.DOC_MODE_DUKC_CTTT, config.DOC_MODE_DUKC_OTHER)
         self.btn_run.config(state="normal" if ready else "disabled")
         if hasattr(self, "btn_legacy"):
-            self.btn_legacy.config(state="normal" if ready else "disabled")
+            self.btn_legacy.config(state="normal" if (ready and not is_dukc_mode) else "disabled")
 
         validation_error = getattr(self, "workflow_validation_error", None)
         if not has_doc_mode:
@@ -1558,19 +1559,22 @@ class MainWindow:
             else:
                 time_msg = ""
             
+            redirect_msg = ""
+            redirect_warn = getattr(self.comparator, "output_redirected_warning", None)
+            if redirect_warn:
+                redirect_msg = f"\n\n⚠️ {get_text('warn_output_redirected', lang, path=redirect_warn)}"
+
             self.update_status("✅ " + get_text("status_complete", lang))
             messagebox.showinfo(
                 get_text("complete", lang), 
-                get_text("complete_msg", lang) + time_msg
+                get_text("complete_msg", lang) + time_msg + redirect_msg
             )
         except Exception as e:
             self.update_status(f"❌ {get_text('status_error', lang)} {e}")
             messagebox.showerror(get_text("error", lang), str(e))
         finally:
             self.is_processing = False
-            self.btn_run.config(state="normal")
-            if hasattr(self, 'btn_legacy'):
-                self.btn_legacy.config(state="normal")
+            self._refresh_workflow_state()
 
     def update_status(self, msg):
         if len(msg) > 100:
@@ -1587,9 +1591,17 @@ class MainWindow:
         if self._show_workflow_error():
             return
 
+        lang = self.current_lang
+        if self.doc_mode_var.get() in (config.DOC_MODE_DUKC_CTTT, config.DOC_MODE_DUKC_OTHER):
+            messagebox.showwarning(
+                get_text("warning", lang),
+                get_text("warn_dukc_no_legacy", lang),
+                parent=self.master
+            )
+            return
+
         if not self._validate_document_mode_selection():
             return
-        lang = self.current_lang
         
         if not self.new_files or not self.old_files:
             messagebox.showwarning(

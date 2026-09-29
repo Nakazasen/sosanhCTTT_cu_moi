@@ -243,13 +243,52 @@ class ReportService:
             self.add_comparison_sheet(result_path, embed_preview=embed_previews, dpi=dpi)
 
     @staticmethod
-    def create_per_file_excel_result(new_file_path, comparison_images, old_images, output_folder, 
-                                      is_pdf_method=False, dpi=100):
+    def get_smart_result_base_name(new_file_path, old_file_path=None):
+        """
+        Xác định tên cơ sở ngắn gọn, trực quan cho file kết quả.
+        - Nếu file mới là biểu mẫu template chung (KDTVN, BM-, Bản yêu cầu, Biểu mẫu, Template...)
+          và file cũ có mã tài liệu (ví dụ: VN 36223, PA92...):
+          Dùng mã '[VN 36223]' làm tên đại diện thay vì ghép chuỗi dài, giúp tên file ngắn gọn
+          và không bị lỗi vượt quá giới hạn 260 ký tự đường dẫn Windows (MAX_PATH).
+        - Ngược lại: Dùng tên file mới (ví dụ: 'VN 35869 mới').
+        """
+        if not new_file_path:
+            return "KetQua"
+        import re
+        new_name_only = os.path.splitext(os.path.basename(new_file_path))[0]
+        if not old_file_path:
+            return new_name_only
+
+        old_name_only = os.path.splitext(os.path.basename(old_file_path))[0]
+        is_generic_template = bool(re.search(r'(BM[-_]|KDTVN|Bản yêu cầu|Biểu mẫu|Template)', new_name_only, re.IGNORECASE))
+        
+        if is_generic_template:
+            m = re.search(r'\b(VN|PA|PE|KD|CTTT)[-_\s]*\d{2,}\b|\b(?!(?:19|20)\d{2}\b)\d{4,}\b', old_name_only, re.IGNORECASE)
+            if m:
+                matched_code = m.group(0).strip()
+                return f"[{matched_code}]"
+
+        return new_name_only
+
+    @staticmethod
+    def get_smart_name_prefix(new_file_path, old_file_path=None):
+        """Hàm tương thích ngược nếu có module gọi get_smart_name_prefix"""
+        if not new_file_path or not old_file_path:
+            return ""
+        base = ReportService.get_smart_result_base_name(new_file_path, old_file_path)
+        new_name_only = os.path.splitext(os.path.basename(new_file_path))[0] if new_file_path else ""
+        if base != new_name_only:
+            return f"{base} "
+        return ""
+
+    @staticmethod
+    def create_per_file_excel_result(new_file_path, comparison_images, old_images=None, output_folder=None, 
+                                      is_pdf_method=False, dpi=100, old_file_path=None):
         """
         Tạo file Excel kết quả riêng cho mỗi cặp file theo format legacy.
         
         Legacy format:
-        - Tên file: "Kết quả_{tên_file_mới}.xlsx" hoặc "Kết quả_PDF_{tên_file_mới}.xlsx"
+        - Tên file: "Kết quả_{tên_cơ_sở}.xlsx" hoặc "Kết quả_PDF_{tên_cơ_sở}.xlsx"
         - Mỗi sheet chứa ảnh so sánh (cũ bên trái, mới bên phải hoặc side-by-side)
         
         Args:
@@ -259,6 +298,7 @@ class ReportService:
             output_folder: Thư mục lưu kết quả
             is_pdf_method: True nếu dùng PDF method
             dpi: DPI cho render (dùng với PDF)
+            old_file_path: Đường dẫn file Excel cũ (tùy chọn, để hỗ trợ đặt tên thông minh)
             
         Returns:
             Đường dẫn file Excel kết quả nếu thành công, None nếu thất bại
@@ -267,13 +307,12 @@ class ReportService:
             from openpyxl import Workbook
             from openpyxl.drawing.image import Image as xlImage
             
-            excel_filename = os.path.basename(new_file_path)
-            excel_name_only = os.path.splitext(excel_filename)[0]
+            base_name = ReportService.get_smart_result_base_name(new_file_path, old_file_path)
             
             if is_pdf_method:
-                result_filename = f"Kết quả_PDF_{excel_name_only}.xlsx"
+                result_filename = f"Kết quả_PDF_{base_name}.xlsx"
             else:
-                result_filename = f"Kết quả_{excel_name_only}.xlsx"
+                result_filename = f"Kết quả_{base_name}.xlsx"
             
             result_path = os.path.join(output_folder, result_filename)
             

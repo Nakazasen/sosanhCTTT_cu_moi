@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [7.4.4] - 2026-09-29 - Tối Ưu Tốc Độ So Sánh (Rollback v7.4.2 Core) & Tinh Chỉnh Biểu Mẫu ĐƯKC
+
+### 🎯 Added & Upgraded
+- **Khôi Phục Tốc Độ So Sánh Lõi (Rollback Thuật Toán So Sánh về v7.4.2)**:
+  - Loại bỏ các bộ lọc hình thái học đường kẻ đa tầng (`detect_thin_lines`, `filter_thin_gridline_shifts`) và các vòng lặp overthinking gây chậm tiến trình so sánh ở bản v7.4.3.
+  - Bảo toàn trọn vẹn giải thuật cân bằng độ sáng Histogram Matching LUT (`match_bgr_crop`, `match_histograms_lut`), kiểm tra tương quan Pearson (`std() < 8.0`, `np.corrcoef >= 0.90`) và dung sai dịch chuyển 1px, giúp so sánh cực nhanh và chính xác.
+- **Tinh Chỉnh Tên File Kết Quả Ngắn Gọn & Trực Quan**:
+  - Đối với biểu mẫu có tên template dài (`KDTVN-A-PE-BM-014-X Bản yêu cầu đối ứng khẩn cấp New_2026.xlsm`), hệ thống tự động nhận diện và thay thế bằng mã ngắn gọn từ file cũ: `Kết quả_PDF_[VN 36223].xlsx` và `[VN 36223].pdf`.
+  - Loại bỏ hoàn toàn nguy cơ vượt quá giới hạn 260 ký tự đường dẫn Windows (MAX_PATH) trên các thư mục mạng sâu.
+- **Bảo Vệ Biểu Mẫu ĐƯKC & Cảnh Báo Quyền Ghi**:
+  - Tự động khóa nút phương pháp Chụp màn hình (Legacy) khi chọn chế độ ĐƯKC, hiển thị hướng dẫn rõ ràng yêu cầu dùng phương pháp PDF.
+  - Hiển thị popup cảnh báo đường dẫn đích khi thư mục mạng không có quyền ghi.
+
+### 🧪 Tests
+- Chạy toàn diện 99 unit test đạt tỷ lệ **99/99 PASSED (100% OK)**.
+
+---
+
 ## [7.4.3] - 2026-09-15 - Chuẩn Hóa Khổ Trang A4 & Khử Báo Động Giả Đường Kẻ Bảng
 
 ### 🎯 Added & Upgraded

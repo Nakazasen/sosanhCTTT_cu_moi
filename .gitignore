@@ -179,3 +179,4 @@ scratch/*
 !scratch/verify_output_excel.py
 !scratch/verify_sheet_order.py
 !scratch/KetQuaSoSanh_CTTT_20260904_131730/
+CTTT/

@@ -25,7 +25,7 @@ def _get_version_from_exe():
         value = json.loads((root / "release.json").read_text(encoding="utf-8-sig"))
         return str(value["version"])
     except Exception:
-        return "7.4.3"
+        return "7.4.4"
 
 def _get_date_from_exe():
     """Tự động lấy ngày từ modification time của file .exe

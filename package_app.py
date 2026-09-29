@@ -123,10 +123,12 @@ def main() -> int:
     args = parser.parse_args()
     build_bundle()
     installer = compile_installer()
+    update_pkg = build_update_package(installer)
+    print(f"Created update package: {update_pkg}")
     if args.publish:
         print(publish_installer(installer))
     if args.publish_update:
-        print(publish_catalog(build_update_package(installer), args.release_notes))
+        print(publish_catalog(update_pkg, args.release_notes))
     print(installer)
     return 0
 

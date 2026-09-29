@@ -157,6 +157,15 @@ class Comparator:
         os.makedirs(target_output_folder, exist_ok=True)
         utils.logger.info(f"Results will be saved to: {target_output_folder}")
         
+        # Check if output folder was redirected due to permissions
+        self.output_redirected_warning = None
+        expected_parent = preferred_folder if (preferred_folder and os.path.exists(preferred_folder)) else os.path.dirname(new_file_list[0])
+        norm_expected = os.path.normcase(os.path.normpath(expected_parent))
+        norm_actual = os.path.normcase(target_output_folder)
+        if not norm_actual.startswith(norm_expected):
+            self.output_redirected_warning = target_output_folder
+            utils.logger.warning(f"Output folder redirected from '{expected_parent}' to '{target_output_folder}' due to write permissions.")
+
         # Check if working with network paths (UNC share or remote drive)
         is_network = (
             any(utils.is_network_path(p) for p in new_file_list + old_file_list) or
@@ -762,7 +771,8 @@ class Comparator:
                         old_images=None,
                         output_folder=output_folder,
                         is_pdf_method=True,
-                        dpi=dpi
+                        dpi=dpi,
+                        old_file_path=old_path
                     )
 
                     # Cleanup comparison images sau khi đã chèn vào Excel
@@ -776,9 +786,9 @@ class Comparator:
                 # Giữ PDF mới và rename thành {filename}.pdf (legacy behavior)
                 # Chỉ xóa PDF cũ
                 try:
-                    # Rename CTTTmoi PDF -> {original_filename}.pdf
-                    original_filename = os.path.splitext(os.path.basename(new_path))[0]
-                    final_pdf_path = os.path.join(output_folder, f"{original_filename}.pdf")
+                    # Rename CTTTmoi PDF -> {base_name}.pdf
+                    base_name = ReportService.get_smart_result_base_name(new_path, old_path)
+                    final_pdf_path = os.path.join(output_folder, f"{base_name}.pdf")
                     
                     if os.path.exists(pdf_new_path):
                         if os.path.exists(final_pdf_path):
@@ -1028,7 +1038,8 @@ class Comparator:
                         old_images=old_screenshots,  # Pass old screenshots for side by side
                         output_folder=output_folder,
                         is_pdf_method=False,
-                        dpi=100
+                        dpi=100,
+                        old_file_path=old_path
                     )
                     
                     # Cleanup comparison images sau khi đã chèn vào Excel

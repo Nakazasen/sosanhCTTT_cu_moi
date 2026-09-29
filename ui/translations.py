@@ -949,6 +949,18 @@ TRANSLATIONS = {
         "zh": "已使用旧版截屏方式成功处理所有作业指导书文件对。",
         "ja": "旧スクリーンショット方式ですべての作業指導書ファイルペアの処理が完了しました。"
     },
+    "warn_output_redirected": {
+        "vi": "Lưu ý: Thư mục nguồn không có quyền ghi. Kết quả được lưu tại:\n{path}",
+        "en": "Note: Source folder is not writable. Results saved to:\n{path}",
+        "zh": "注意: 源目录无写入权限。结果已保存至:\n{path}",
+        "ja": "注意: ソースフォルダへの書き込み権限がありません。結果は以下に保存されました:\n{path}"
+    },
+    "warn_dukc_no_legacy": {
+        "vi": "Chế độ tài liệu ĐƯKC (Tờ phát hành / Form) chỉ hỗ trợ phương pháp so sánh PDF độ chính xác cao.\nPhương pháp chụp màn hình (Legacy) không tương thích với biểu mẫu này.\n\n👉 Vui lòng sử dụng nút 'Bắt đầu so sánh' (màu xanh).",
+        "en": "DUKC Form modes only support the High-Precision PDF method.\nLegacy Screenshot method is not compatible with these forms.\n\n👉 Please click 'Start Comparison' (Blue button).",
+        "zh": "应急应对表单 (Form) 仅支持高精度PDF对比方法。\n截图模式 (Legacy) 与此类表单不兼容。\n\n👉 请点击 '开始对比' (蓝色按钮)。",
+        "ja": "緊急対応票・Formモードは高精度PDF比較方式のみ対応しています。\nスクリーンショット方式 (Legacy) はこの帳票に対応していません。\n\n👉 「比較開始」(青いボタン) をご使用ください。"
+    },
 
     # =========================================================================
     # SETTINGS NOTICES & RESULT FOLDER
