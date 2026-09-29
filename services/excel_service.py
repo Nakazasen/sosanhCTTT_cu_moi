@@ -318,3 +318,114 @@ class ExcelService:
             self.close_workbook(wb)
             
         return final_file_path, sheet_name_mapping
+
+    def preprocess_dukc_form_sheet(self, file_path, output_dir=None, is_new=True):
+        """
+        Preprocesses Excel workbook for DUKC sheet 'Form' comparison:
+        1. Creates a working copy in output_dir (or tempdir) to keep original user file untouched.
+        2. Normalizes rich-text fonts in xl/sharedStrings.xml:
+           - Forces all <rFont val="..."/> to 'Times New Roman' (stripping Yu Gothic, MS Mincho, etc.
+             introduced when users copy-paste Japanese content).
+           - Strictly PRESERVES all font colors (<color rgb="..."/>) so that business-critical
+             red markings (FFFF0000) are completely intact.
+        3. Normalizes text runs in sharedStrings.xml:
+           - Strips leading/trailing newlines/whitespace from request paragraphs (e.g. B65 leading \n).
+        
+        Args:
+            file_path (str): Original file path.
+            output_dir (str, optional): Target directory for preprocessed file.
+            is_new (bool): True for new file, False for old file (separates subdirectories).
+            
+        Returns:
+            str: Path to the preprocessed temporary file.
+        """
+        if not file_path or not os.path.exists(file_path):
+            return file_path
+
+        import shutil
+        import tempfile
+        import zipfile
+        import xml.etree.ElementTree as ET
+
+        base_name = os.path.basename(file_path)
+        sub_folder = "new" if is_new else "old"
+
+        if output_dir and os.path.exists(output_dir):
+            target_dir = os.path.join(output_dir, "_dukc_prep", sub_folder)
+        else:
+            target_dir = os.path.join(tempfile.gettempdir(), "_dukc_prep", sub_folder)
+        os.makedirs(target_dir, exist_ok=True)
+
+        target_file_path = os.path.join(target_dir, base_name)
+        shutil.copy2(file_path, target_file_path)
+        utils.unblock_file(target_file_path)
+
+        try:
+            ns = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+            ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+
+            with zipfile.ZipFile(target_file_path, 'r') as zin:
+                namelist = zin.namelist()
+                if 'xl/sharedStrings.xml' not in namelist:
+                    return target_file_path
+                other_files = {name: zin.read(name) for name in namelist if name != 'xl/sharedStrings.xml'}
+                sst_data = zin.read('xl/sharedStrings.xml')
+
+            sst_xml = ET.fromstring(sst_data)
+            modified = False
+
+            for si in sst_xml.findall(f'{ns}si'):
+                runs = si.findall(f'{ns}r')
+                if not runs:
+                    t_elem = si.find(f'{ns}t')
+                    if t_elem is not None and t_elem.text:
+                        orig = t_elem.text
+                        stripped = orig.strip('\r\n')
+                        if stripped != orig:
+                            t_elem.text = stripped
+                            modified = True
+                    continue
+
+                # 1. Normalize font to Times New Roman across all runs
+                for run in runs:
+                    rPr = run.find(f'{ns}rPr')
+                    if rPr is not None:
+                        rFont = rPr.find(f'{ns}rFont')
+                        if rFont is not None and rFont.attrib.get('val') != 'Times New Roman':
+                            rFont.attrib['val'] = 'Times New Roman'
+                            modified = True
+
+                # 2. Strip leading newlines from first run with text
+                for run in runs:
+                    t_elem = run.find(f'{ns}t')
+                    if t_elem is not None and t_elem.text:
+                        lstr = t_elem.text.lstrip('\r\n')
+                        if lstr != t_elem.text:
+                            t_elem.text = lstr
+                            modified = True
+                        if t_elem.text:
+                            break
+
+                # 3. Strip trailing newlines from last run with text
+                for run in reversed(runs):
+                    t_elem = run.find(f'{ns}t')
+                    if t_elem is not None and t_elem.text:
+                        rstr = t_elem.text.rstrip('\r\n')
+                        if rstr != t_elem.text:
+                            t_elem.text = rstr
+                            modified = True
+                        if t_elem.text:
+                            break
+
+            if modified:
+                new_sst = ET.tostring(sst_xml, encoding='utf-8', xml_declaration=True)
+                with zipfile.ZipFile(target_file_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+                    for name, data in other_files.items():
+                        zout.writestr(name, data)
+                    zout.writestr('xl/sharedStrings.xml', new_sst)
+                utils.logger.info(f"[DUKC Preprocess] Successfully normalized fonts & line breaks in: {base_name}")
+
+        except Exception as e:
+            utils.logger.warning(f"[DUKC Preprocess] Could not normalize {base_name}: {e}. Using copied file.")
+
+        return target_file_path

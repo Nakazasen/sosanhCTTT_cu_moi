@@ -599,7 +599,7 @@ class PDFService:
                 old = current_by_index.get(item["index"])
                 if old is None:
                     result.append(item)
-                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 1e-8:
+                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 0.2:
                     result.append(item)
                 elif field == "hidden" and bool(item["hidden"]) != bool(old["hidden"]):
                     result.append(item)
@@ -655,7 +655,7 @@ class PDFService:
                 old = current_by_index.get(item["index"])
                 if old is None:
                     result.append(item)
-                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 1e-8:
+                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 0.2:
                     result.append(item)
                 elif field == "hidden" and bool(item["hidden"]) != bool(old["hidden"]):
                     result.append(item)
@@ -843,6 +843,7 @@ class PDFService:
                     ps.TopMargin = 0
                     ps.BottomMargin = 0
                     ps.CenterHorizontally = True
+                    ps.CenterVertically = False
                 except Exception as e:
                     utils.logger.error(f"Error setting up sheet '{sheet_name}': {e}")
                 finally:
@@ -1340,7 +1341,7 @@ class PDFService:
                             ps.HeaderMargin = 0
                             ps.FooterMargin = 0
                             ps.CenterHorizontally = True
-                            ps.CenterVertically = True
+                            ps.CenterVertically = False
                             ps.PrintHeadings = False
                             ps.PrintGridlines = False
                         except Exception as ps_err:

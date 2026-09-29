@@ -246,8 +246,19 @@ class Comparator:
                     ref_mapping = new_sheet_names_collection.get(idx, [])
                     proc_path, _ = self.excel_service.standard_preprocess(f_path, is_new=False, auto_add_b=do_auto_b, new_sheet_names_ref=ref_mapping) 
                     processed_old_files.append(proc_path)
+            elif doc_mode == config.DOC_MODE_DUKC_OTHER:
+                if status_callback:
+                    status_callback("Đang tiền xử lý sheet 'Form' (chuẩn hóa font & ngắt dòng)...")
+                processed_new_files = [
+                    self.excel_service.preprocess_dukc_form_sheet(f, output_dir=working_output_folder, is_new=True)
+                    for f in working_new_files
+                ]
+                processed_old_files = [
+                    self.excel_service.preprocess_dukc_form_sheet(f, output_dir=working_output_folder, is_new=False)
+                    for f in working_old_files
+                ]
             else:
-                # DUKC modes & Custom mode: Keep original format intact
+                # DUKC CTTT mode & Custom mode: Keep original format intact
                 processed_new_files = list(working_new_files)
                 processed_old_files = list(working_old_files)
 
@@ -280,6 +291,9 @@ class Comparator:
                     status_callback("Dọn dẹp file tạm...")
                 CleanupService.cleanup_temp_images(working_output_folder, keep_diff_images=True)
                 CleanupService.cleanup_per_sheet_pdfs(working_output_folder)
+                prep_dir = os.path.join(working_output_folder, "_dukc_prep")
+                if os.path.exists(prep_dir):
+                    shutil.rmtree(prep_dir, ignore_errors=True)
                 
             else:
                 # STRATEGY B: Screenshot Comparison Workflow

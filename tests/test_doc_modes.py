@@ -480,5 +480,76 @@ class TestCustomDocModeLogic(unittest.TestCase):
         app.print_area_var.set.assert_called_once_with("J2:BD76")
 
 
+
+class TestDukcFormPreprocess(unittest.TestCase):
+    """Test DUKC sheet 'Form' preprocessing and normalization."""
+
+    def test_dukc_preprocess_normalizes_fonts_and_preserves_color(self):
+        import zipfile
+        import xml.etree.ElementTree as ET
+        from services.excel_service import ExcelService
+
+        excel_srv = ExcelService.__new__(ExcelService)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_file = os.path.join(tmpdir, "test_dukc.xlsm")
+            ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+            
+            # Create a mock minimal .xlsm with sharedStrings containing Yu Gothic and Red text
+            sst_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="{ns}" count="2" uniqueCount="2">
+    <si>
+        <r>
+            <rPr>
+                <rFont val="游ゴシック"/>
+                <color rgb="FFFF0000"/>
+                <sz val="9"/>
+            </rPr>
+            <t>
+【VN_部品管理課】</t>
+        </r>
+        <r>
+            <rPr>
+                <rFont val="ＭＳ 明朝"/>
+                <sz val="9"/>
+            </rPr>
+            <t>選別済の部品
+</t>
+        </r>
+    </si>
+</sst>'''
+            with zipfile.ZipFile(src_file, 'w', zipfile.ZIP_DEFLATED) as z:
+                z.writestr("xl/sharedStrings.xml", sst_content.encode("utf-8"))
+                z.writestr("[Content_Types].xml", b"<dummy/>")
+
+            prep_path = excel_srv.preprocess_dukc_form_sheet(src_file, output_dir=tmpdir, is_new=True)
+            self.assertTrue(os.path.exists(prep_path))
+
+            # Inspect preprocessed sharedStrings.xml
+            with zipfile.ZipFile(prep_path, 'r') as z:
+                res_xml = ET.fromstring(z.read("xl/sharedStrings.xml"))
+
+            runs = res_xml.findall(f"{{{ns}}}si/{{{ns}}}r")
+            self.assertEqual(len(runs), 2)
+
+            # 1. Fonts normalized to Times New Roman
+            rFont1 = runs[0].find(f"{{{ns}}}rPr/{{{ns}}}rFont")
+            self.assertEqual(rFont1.attrib.get("val"), "Times New Roman")
+            rFont2 = runs[1].find(f"{{{ns}}}rPr/{{{ns}}}rFont")
+            self.assertEqual(rFont2.attrib.get("val"), "Times New Roman")
+
+            # 2. Color preserved
+            color1 = runs[0].find(f"{{{ns}}}rPr/{{{ns}}}color")
+            self.assertEqual(color1.attrib.get("rgb"), "FFFF0000")
+
+            # 3. Leading newline stripped
+            t1 = runs[0].find(f"{{{ns}}}t").text
+            self.assertEqual(t1, "【VN_部品管理課】")
+
+            # 4. Trailing newline stripped
+            t2 = runs[1].find(f"{{{ns}}}t").text
+            self.assertEqual(t2, "選別済の部品")
+
+
 if __name__ == "__main__":
     unittest.main()

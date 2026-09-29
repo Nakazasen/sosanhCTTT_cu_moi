@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [7.4.5] - 2026-09-29 - Chuẩn Hóa Font & Ngắt Dòng Tiếng Nhật Sheet 'Form' (ĐƯKC)
+
+### 🎯 Added & Upgraded
+- **Tiền Xử Lý Chuẩn Hóa Font Rich-Text Tiếng Nhật Cho Sheet 'Form' (`DOC_MODE_DUKC_OTHER`)**:
+  - Tự động chuẩn hóa toàn bộ các thẻ `<rFont>` trong `xl/sharedStrings.xml` về `Times New Roman`, khắc phục tình trạng copy-paste nội dung tiếng Nhật làm đổi font (Yu Gothic, MS Gothic...) dẫn đến vỡ layout và bôi đỏ sai khác giả.
+  - Bảo toàn tuyệt đối 100% màu chữ đỏ đánh dấu nghiệp vụ (`<color rgb="FFFF0000"/>`).
+  - Tự động loại bỏ ký tự ngắt dòng thừa (`\r\n`) ở đầu/cuối khối văn bản copy-paste (như ô B65), giúp văn bản khớp pixel tuyệt đối.
+- **Cố Định In Đỉnh Trang Khử Lệch Trục Dọc Toàn Bộ 4 Chế Độ**:
+  - Gán cứng `ps.CenterVertically = False` trong thiết lập in COM và fallback của `PDFService`, triệt tiêu độ lệch dọc 3.5pt giữa các phiên bản biểu mẫu.
+- **Nâng Cấp Bộ Lọc Kích Thước Lưới Excel**:
+  - Chuyển ngưỡng so sánh kích thước layout hàng/cột từ `1e-8` thành `0.2pt`, triệt tiêu sai số làm tròn floating-point của Excel COM gây viền đỏ giả ở chân bảng tính.
+
+### 🧪 Tests
+- Chạy toàn diện 100 unit test đạt tỷ lệ **100/100 PASSED (100% OK)**.
+
+---
+
 ## [7.4.4] - 2026-09-29 - Tối Ưu Tốc Độ So Sánh (Rollback v7.4.2 Core) & Tinh Chỉnh Biểu Mẫu ĐƯKC
 
 ### 🎯 Added & Upgraded
