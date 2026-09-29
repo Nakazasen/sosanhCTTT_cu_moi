@@ -78,6 +78,7 @@ def compile_installer() -> Path:
 
 
 def publish_installer(installer: Path, destination: Path = PUBLISH_DIR) -> Path:
+    import time
     destination.mkdir(parents=True, exist_ok=True)
     partial = destination / f"{installer.name}.part"
     final = destination / installer.name
@@ -85,7 +86,19 @@ def publish_installer(installer: Path, destination: Path = PUBLISH_DIR) -> Path:
     if sha256(installer) != sha256(partial):
         partial.unlink(missing_ok=True)
         raise RuntimeError("Installer hash changed during publish")
-    os.replace(partial, final)
+    for _ in range(5):
+        try:
+            if final.exists():
+                try:
+                    final.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            os.replace(partial, final)
+            return final
+        except PermissionError:
+            time.sleep(1.0)
+    shutil.copyfile(installer, final)
+    partial.unlink(missing_ok=True)
     return final
 
 
@@ -106,12 +119,20 @@ def build_update_package(installer: Path) -> Path:
 
 
 def publish_catalog(package: Path, notes: str, destination: Path = UPDATE_DIR) -> Path:
+    import time
     destination.mkdir(parents=True, exist_ok=True)
     published = publish_installer(package, destination)
     catalog = {"schema": 1, "version": release()["version"], "package": published.name, "sha256": sha256(published), "size": published.stat().st_size, "notes": notes}
     partial = destination / "latest.json.part"
     partial.write_text(json.dumps(catalog, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    os.replace(partial, destination / "latest.json")
+    for _ in range(5):
+        try:
+            os.replace(partial, destination / "latest.json")
+            return published
+        except PermissionError:
+            time.sleep(1.0)
+    shutil.copyfile(partial, destination / "latest.json")
+    partial.unlink(missing_ok=True)
     return published
 
 

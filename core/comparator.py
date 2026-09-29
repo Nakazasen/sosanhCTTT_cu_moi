@@ -528,7 +528,11 @@ class Comparator:
                     if status_callback:
                         status_callback(f"Exporting PDF (NEW - {form_sheet_new}): {file_name}")
                     pdf_new_path = os.path.join(output_folder, f"CTTTmoi_{idx}.pdf")
-                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(new_path, [form_sheet_new], pdf_new_path, print_area=print_area, _keep_alive=True)
+                    success_new = self.pdf_service.export_sheets_to_pdf_with_retry(
+                        new_path, [form_sheet_new], pdf_new_path,
+                        print_area=print_area, _keep_alive=True,
+                        center_vertically=False
+                    )
                     if not success_new:
                         self.report_service.add_result(file_name, form_sheet_new, "ERROR", "Không xuất được PDF mới")
                         continue
@@ -542,7 +546,8 @@ class Comparator:
                     success_old = self.pdf_service.export_sheets_to_pdf_with_retry(
                         old_path, [form_sheet_old], pdf_old_path,
                         print_area=print_area, _keep_alive=True,
-                        layout_reference_path=new_path
+                        layout_reference_path=new_path,
+                        center_vertically=False
                     )
                     if not success_old:
                         self.report_service.add_result(file_name, form_sheet_old, "ERROR", "Không xuất được PDF cũ")

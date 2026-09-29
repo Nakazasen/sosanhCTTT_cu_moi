@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [7.4.6] - 2026-09-29 - Cô Lập Hoàn Toàn Thiết Lập In ĐƯKC Khỏi CTTT
+
+### 🎯 Added & Upgraded
+- **Cô Lập Tuyệt Đối Căn Lề In Giữa Tờ Mặt ĐƯKC và CTTT**:
+  - Tách riêng cờ `center_vertically=False` chỉ truyền cho xuất PDF Sheet 'Form' (`DOC_MODE_DUKC_OTHER`).
+  - Khôi phục 100% PageSetup nguyên bản của Excel cho các chế độ CTTT (`DOC_MODE_STANDARD_CTTT`, `DOC_MODE_DUKC_CTTT`), triệt tiêu hoàn toàn lỗi lệch dọc 6px làm bôi đỏ oan toàn bộ trang CTTT.
+  - Bảo toàn ngưỡng đồng bộ kích thước dòng/cột float `1e-8` để đồng bộ chính xác từng điểm ảnh giữa 2 file CTTT.
+- **Tăng Cường Độ Bền Tiền Xử Lý File CTTT Cũ (`standard_preprocess`)**:
+  - Bọc khối xử lý từng sheet trong `try...except`, ngăn chặn triệt để lỗi gián đoạn do sheet bị xóa hoặc tên ký tự đặc biệt (`<unknown>.Name`).
+
+### 🧪 Tests
+- Chạy toàn diện 100 unit test đạt tỷ lệ **100/100 PASSED (100% OK)**.
+
+---
+
 ## [7.4.5] - 2026-09-29 - Chuẩn Hóa Font & Ngắt Dòng Tiếng Nhật Sheet 'Form' (ĐƯKC)
 
 ### 🎯 Added & Upgraded

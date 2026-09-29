@@ -263,50 +263,54 @@ class ExcelService:
                 sheets_to_process = list(wb.Sheets)
             
             for sheet in sheets_to_process:
-                original_name = sheet.Name
-                new_name = original_name.rstrip()
-                
-                # Normalize Chars (_, ., ,, | -> - hoặc khoảng trắng)
-                new_name = new_name.replace("_", "-").replace(".", "-").replace(",", "-").replace("|", " ")
-                
-                if is_new:
-                    # File mới: thêm 'b' nếu bật auto_add_b và chưa có 'b'
-                    if auto_add_b and not new_name.lower().startswith('b'):
-                        new_name = 'b' + new_name
-                else:
-                    # File cũ: thêm 'b' nếu sheet tương ứng trong file mới có 'b'
-                    if auto_add_b and new_sheet_names_ref:
-                        for ref in new_sheet_names_ref:
-                            # ref có thể là tuple (orig, final) hoặc chuỗi final_name
-                            final_new_name = ref[1] if isinstance(ref, (list, tuple)) else str(ref)
-                            if final_new_name.lower().startswith('b'):
-                                target_check = final_new_name[1:]
-                                if (new_name == target_check or 
-                                    new_name.replace("_", "-").replace(".", "-").replace(",", "-").replace("|", " ") == target_check):
-                                    if not new_name.lower().startswith('b'):
-                                        new_name = 'b' + new_name
-                                    break
-                
-                # Rename if changed
-                if new_name != original_name:
-                    try:
-                        unique_name = self._make_unique_sheet_name(wb, new_name)
-                        sheet.Name = unique_name
-                        modified = True
-                        sheet_name_mapping.append((original_name, unique_name))
-                        utils.logger.info(f"Renamed sheet: '{original_name}' → '{unique_name}'")
-                    except Exception as e:
-                        utils.logger.warning(f"Could not rename sheet '{original_name}' to '{new_name}': {e}")
-                        sheet_name_mapping.append((original_name, original_name))
-                else:
-                    sheet_name_mapping.append((original_name, original_name))
-                
-                # Change Font for EX1:ZZ80 (Targeted CTTT range for fast execution)
                 try:
-                    sheet.Range("EX1:ZZ80").Font.Name = "Times New Roman"
-                    modified = True
-                except Exception:
-                    pass
+                    original_name = sheet.Name
+                    new_name = original_name.rstrip()
+                    
+                    # Normalize Chars (_, ., ,, | -> - hoặc khoảng trắng)
+                    new_name = new_name.replace("_", "-").replace(".", "-").replace(",", "-").replace("|", " ")
+                    
+                    if is_new:
+                        # File mới: thêm 'b' nếu bật auto_add_b và chưa có 'b'
+                        if auto_add_b and not new_name.lower().startswith('b'):
+                            new_name = 'b' + new_name
+                    else:
+                        # File cũ: thêm 'b' nếu sheet tương ứng trong file mới có 'b'
+                        if auto_add_b and new_sheet_names_ref:
+                            for ref in new_sheet_names_ref:
+                                # ref có thể là tuple (orig, final) hoặc chuỗi final_name
+                                final_new_name = ref[1] if isinstance(ref, (list, tuple)) else str(ref)
+                                if final_new_name.lower().startswith('b'):
+                                    target_check = final_new_name[1:]
+                                    if (new_name == target_check or 
+                                        new_name.replace("_", "-").replace(".", "-").replace(",", "-").replace("|", " ") == target_check):
+                                        if not new_name.lower().startswith('b'):
+                                            new_name = 'b' + new_name
+                                        break
+                    
+                    # Rename if changed
+                    if new_name != original_name:
+                        try:
+                            unique_name = self._make_unique_sheet_name(wb, new_name)
+                            sheet.Name = unique_name
+                            modified = True
+                            sheet_name_mapping.append((original_name, unique_name))
+                            utils.logger.info(f"Renamed sheet: '{original_name}' → '{unique_name}'")
+                        except Exception as e:
+                            utils.logger.warning(f"Could not rename sheet '{original_name}' to '{new_name}': {e}")
+                            sheet_name_mapping.append((original_name, original_name))
+                    else:
+                        sheet_name_mapping.append((original_name, original_name))
+                    
+                    # Change Font for EX1:ZZ80 (Targeted CTTT range for fast execution)
+                    try:
+                        sheet.Range("EX1:ZZ80").Font.Name = "Times New Roman"
+                        modified = True
+                    except Exception:
+                        pass
+                except Exception as sheet_err:
+                    utils.logger.warning(f"Skipping problematic sheet during preprocess: {sheet_err}")
+                    continue
             
             if modified:
                 wb.Save()

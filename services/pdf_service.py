@@ -599,7 +599,7 @@ class PDFService:
                 old = current_by_index.get(item["index"])
                 if old is None:
                     result.append(item)
-                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 0.2:
+                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 1e-8:
                     result.append(item)
                 elif field == "hidden" and bool(item["hidden"]) != bool(old["hidden"]):
                     result.append(item)
@@ -655,7 +655,7 @@ class PDFService:
                 old = current_by_index.get(item["index"])
                 if old is None:
                     result.append(item)
-                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 0.2:
+                elif field == "size" and abs(float(item["size"]) - float(old["size"])) > 1e-8:
                     result.append(item)
                 elif field == "hidden" and bool(item["hidden"]) != bool(old["hidden"]):
                     result.append(item)
@@ -694,7 +694,7 @@ class PDFService:
             target_sheet.Range(f"{group['start']}:{group['end']}").EntireRow.Hidden = hidden
 
     def export_sheets_to_pdf(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76",
-                             _keep_alive=False, layout_reference_path=None):
+                             _keep_alive=False, layout_reference_path=None, center_vertically=None):
         """
         Export specified sheets from Excel file to a single PDF.
         
@@ -843,7 +843,8 @@ class PDFService:
                     ps.TopMargin = 0
                     ps.BottomMargin = 0
                     ps.CenterHorizontally = True
-                    ps.CenterVertically = False
+                    if center_vertically is not None:
+                        ps.CenterVertically = bool(center_vertically)
                 except Exception as e:
                     utils.logger.error(f"Error setting up sheet '{sheet_name}': {e}")
                 finally:
@@ -1102,7 +1103,7 @@ class PDFService:
     
     def export_sheets_to_pdf_with_retry(self, file_path, sheet_names, output_pdf_path,
                                          print_area="EX1:GR76", max_retries=3, _keep_alive=False,
-                                         layout_reference_path=None):
+                                         layout_reference_path=None, center_vertically=None):
         """
         Export sheets to PDF with retry mechanism and fallback.
         
@@ -1118,6 +1119,8 @@ class PDFService:
             print_area: Print area range
             max_retries: Number of retry attempts
             _keep_alive: If True, keep Excel alive for subsequent calls
+            layout_reference_path: Path to reference layout workbook
+            center_vertically: Explicit bool for ps.CenterVertically (None = preserve/default)
             
         Returns:
             True if successful, False otherwise
@@ -1138,7 +1141,8 @@ class PDFService:
                     # === FIX: Keep Excel alive between retries (saves 2-5s startup cost per retry) ===
                     success = self.export_sheets_to_pdf(
                         file_path, sheet_names, output_pdf_path, print_area,
-                        _keep_alive=True, layout_reference_path=layout_reference_path
+                        _keep_alive=True, layout_reference_path=layout_reference_path,
+                        center_vertically=center_vertically
                     )
                     if success and os.path.exists(output_pdf_path):
                         utils.logger.info(f"PDF export successful on attempt {attempt + 1}")
@@ -1148,7 +1152,8 @@ class PDFService:
                     utils.logger.warning(f"Main method failed, trying fallback...")
                     success = self._export_pdf_fallback(
                         file_path, sheet_names, output_pdf_path, print_area,
-                        layout_reference_path=layout_reference_path
+                        layout_reference_path=layout_reference_path,
+                        center_vertically=center_vertically
                     )
                     if success and os.path.exists(output_pdf_path):
                         utils.logger.info(f"Fallback export successful")
@@ -1170,7 +1175,7 @@ class PDFService:
                 self._cleanup_excel()
     
     def _export_pdf_fallback(self, file_path, sheet_names, output_pdf_path, print_area="EX1:GR76",
-                             layout_reference_path=None):
+                             layout_reference_path=None, center_vertically=None):
         """
         Fallback method: Copy sheets to new workbook and export from there.
         
@@ -1341,7 +1346,10 @@ class PDFService:
                             ps.HeaderMargin = 0
                             ps.FooterMargin = 0
                             ps.CenterHorizontally = True
-                            ps.CenterVertically = False
+                            if center_vertically is not None:
+                                ps.CenterVertically = bool(center_vertically)
+                            else:
+                                ps.CenterVertically = True
                             ps.PrintHeadings = False
                             ps.PrintGridlines = False
                         except Exception as ps_err:
